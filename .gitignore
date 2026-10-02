@@ -44,6 +44,15 @@ temp_audio/
 temp_dialogos/
 temp_chunks/
 
+# AI Model Weights & Cache (Kokoro, Hugging Face, Torch)
+*.onnx
+*.bin
+*.pth
+*.pt
+data/models/
+kokoro-*.onnx
+voices.json
+
 # Project Data (Keep directory structure via .gitkeep, ignore generated content)
 data/inputs/*
 !data/inputs/.gitkeep
