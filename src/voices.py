@@ -479,15 +479,15 @@ def list_voices(
 
 def find_fallback_voice(primary_voice: VoiceProfile) -> VoiceProfile:
     """
-    Encontra a melhor voz de contingência ilimitada (Edge-TTS ou Kokoro)
-    para um personagem, garantindo que o sistema nunca pare se a cota do
-    Gemini acabar ou a internet falhar.
+    Encontra a melhor voz de contingência garantida no Edge-TTS (nuvem ilimitada sem instalação).
+    Garante que se o Kokoro (pesos ausentes) ou Gemini (cota/chave) não puderem sintetizar,
+    o sistema sempre tenha uma voz válida pronta para falar.
     """
-    if primary_voice.engine in ("edge", "kokoro"):
+    if primary_voice.engine == "edge":
         return primary_voice
 
-    # Para vozes Gemini, busca o gêmeo mais próximo no Edge ou Kokoro
-    candidatas = [v for v in VOICE_CATALOG.values() if v.engine in ("edge", "kokoro")]
+    # Para vozes Gemini ou Kokoro, busca o melhor equivalente exclusivamente no Edge-TTS
+    candidatas = [v for v in VOICE_CATALOG.values() if v.engine == "edge"]
 
     # 1. Tenta casar Gênero + Idade + Sotaque
     exatas = [
@@ -500,7 +500,17 @@ def find_fallback_voice(primary_voice: VoiceProfile) -> VoiceProfile:
     if exatas:
         return exatas[0]
 
-    # 2. Tenta casar Gênero + Idade
+    # 2. Tenta casar Gênero + Sotaque (relaxa idade)
+    sotaque_genero = [
+        v
+        for v in candidatas
+        if v.gender == primary_voice.gender
+        and v.accent == primary_voice.accent
+    ]
+    if sotaque_genero:
+        return sotaque_genero[0]
+
+    # 3. Tenta casar Gênero + Idade
     idade_genero = [
         v
         for v in candidatas
@@ -510,7 +520,7 @@ def find_fallback_voice(primary_voice: VoiceProfile) -> VoiceProfile:
     if idade_genero:
         return idade_genero[0]
 
-    # 3. Tenta casar apenas Gênero
+    # 4. Tenta casar apenas Gênero
     apenas_genero = [v for v in candidatas if v.gender == primary_voice.gender]
     if apenas_genero:
         return apenas_genero[0]

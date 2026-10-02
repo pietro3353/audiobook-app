@@ -116,18 +116,41 @@ O AudioBook App adapta seu comportamento ao tipo de texto processado:
 
 ## 💻 Interface de Linha de Comando (CLI)
 
-O pipeline é desacoplado em etapas independentes, permitindo inspeção e ajuste prévio do roteiro:
+O pipeline é desacoplado em etapas independentes, permitindo inspeção e ajuste prévio do elenco antes de gravar:
 
 ```bash
-# 1. Direção: analisa o texto, alimenta a Bíblia de Personagens e gera o roteiro estruturado (JSON)
-python -m src.cli direct --project dom-casmurro --input data/inputs/livro.txt --mode fiction
+# 1. Direção: analisa o texto, alimenta a Bíblia de Personagens e gera os roteiros JSON
+python main.py direct --project dom-casmurro --input data/inputs/livro.txt --mode fiction
 
-# 2. Renderização: consome o roteiro em cache e sintetiza o áudio via Edge-TTS e FFmpeg
-python -m src.cli render --project dom-casmurro
+# (Opcional com Modo Express 100% offline sem gastar API):
+python main.py direct --project artigo-estudo --input data/inputs/artigo.pdf --express
 
-# 3. Atalho Completo: executa direção e renderização de ponta a ponta (ideal para resumos rápidos)
-python -m src.cli run --project resumo-economia --input data/inputs/artigo.txt --mode summary
+# 2. Elenco (Cast): visualiza e customiza as vozes escolhidas para cada personagem
+python main.py cast --project dom-casmurro
+
+# Para alterar manualmente a voz de um personagem antes de gravar:
+python main.py cast --project dom-casmurro --set-voice arthur edge_antonio
+
+# 3. Renderização: sintetiza as falas e masteriza os áudios via Edge-TTS / FFmpeg
+python main.py render --project dom-casmurro
+
+# 4. Atalho Completo: executa direção e renderização de ponta a ponta
+python main.py run --project resumo-economia --input data/inputs/artigo.txt --mode summary
 ```
+
+---
+
+## 🎧 Demonstração Real Gerada
+
+O projeto inclui um áudio demonstrativo completo gerado de ponta a ponta, apresentando narração imersiva, diálogos contrastantes e pausas cênicas:
+
+* **Caminho do arquivo:** `data/projects/demo_audiobook/output/demo_cena_dramatica.mp3`
+* **Duração:** 48 segundos | Formato: MP3 24kHz Mono 160 kb/s
+* **Elenco presente na cena:**
+  * **Narrador:** Voz sóbria e grave (*Antônio*, Edge-TTS) com emoções `misterio` e `solene` (pausa final de 1.2s).
+  * **Pierre Laurent:** Personagem com sotaque francês nativo (*Rémy*, Edge-TTS Multilingual) em tom `tenso`.
+  * **Arthur Pendelton:** Jovem herói dinâmico (*Alex Blended*, tom acelerado) em tom `animado`.
+  * **Aninha:** Menina com voz infantil (*Thalita/Francisca*, pitch elevado +6Hz) em tom `panico`.
 
 ---
 
