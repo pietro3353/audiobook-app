@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Environment Variables
+.env
+
+# Audio and Media outputs
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.aac
+*.m4a
+
+# Temporary processing directories
+temp/
+tmp/
+temp_audio/
+temp_dialogos/
+temp_chunks/
+
+# Project Data (Keep directory structure via .gitkeep, ignore generated content)
+data/inputs/*
+!data/inputs/.gitkeep
+
+data/projects/*
+!data/projects/.gitkeep
+
+# IDEs and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
