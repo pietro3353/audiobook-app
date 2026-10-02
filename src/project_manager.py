@@ -237,46 +237,56 @@ class ProjectManager:
         # 3. Conjunto de vozes já em uso neste projeto
         vozes_em_uso = {c.voice_id for c in bible.characters.values()}
 
-        # 4. Seleção da Voz Principal baseada na Estratégia de Motores
-        vozes_candidatas: List[VoiceProfile] = []
+        # 4. Seleção Inteligente de Voz (Cascata Anti-Colisão)
+        # Prioriza encontrar uma voz ainda NÃO em uso antes de cogitar repetir
+        def buscar_candidatas(apenas_livres: bool = True) -> Optional[VoiceProfile]:
+            # Se for protagonista em modo híbrido, busca PRIMEIRO em gemini
+            if metadata.engine_strategy == "hybrid" and is_protagonist:
+                motores_ordem = [("gemini",), ("edge", "kokoro")]
+            else:
+                motores_ordem = [("edge", "kokoro")]
 
-        if metadata.engine_strategy == "hybrid" and is_protagonist:
-            # Em modo híbrido, protagonistas podem usar Gemini Audio com atuação dramática
-            vozes_candidatas = list_voices(
-                engine="gemini", gender=gender, apparent_age=apparent_age, accent=accent
-            )
-            if not vozes_candidatas:
-                vozes_candidatas = list_voices(engine="gemini", gender=gender)
+            for motores in motores_ordem:
+                # Nível 1: Gênero + Idade + Sotaque
+                cands = [
+                    v for v in list_voices(gender=gender, apparent_age=apparent_age, accent=accent)
+                    if v.engine in motores and (v.id not in vozes_em_uso if apenas_livres else True)
+                ]
+                if cands:
+                    return cands[0]
 
-        # Se não for híbrido ou não encontrou no Gemini, busca em Edge e Kokoro
-        if not vozes_candidatas:
-            vozes_candidatas = [
-                v
-                for v in list_voices(gender=gender, apparent_age=apparent_age, accent=accent)
-                if v.engine in ("edge", "kokoro")
-            ]
+                # Nível 2: Gênero + Sotaque (relaxa idade)
+                cands = [
+                    v for v in list_voices(gender=gender, accent=accent)
+                    if v.engine in motores and (v.id not in vozes_em_uso if apenas_livres else True)
+                ]
+                if cands:
+                    return cands[0]
 
-        # Se ainda vazio, relaxa o sotaque
-        if not vozes_candidatas:
-            vozes_candidatas = [
-                v
-                for v in list_voices(gender=gender, apparent_age=apparent_age)
-                if v.engine in ("edge", "kokoro")
-            ]
+                # Nível 3: Gênero + Idade (relaxa sotaque)
+                cands = [
+                    v for v in list_voices(gender=gender, apparent_age=apparent_age)
+                    if v.engine in motores and (v.id not in vozes_em_uso if apenas_livres else True)
+                ]
+                if cands:
+                    return cands[0]
 
-        # Se ainda vazio, busca apenas pelo gênero em motores ilimitados
-        if not vozes_candidatas:
-            vozes_candidatas = [
-                v for v in list_voices(gender=gender) if v.engine in ("edge", "kokoro")
-            ]
+                # Nível 4: Apenas Gênero (qualquer sotaque/idade disponível no catálogo)
+                cands = [
+                    v for v in list_voices(gender=gender)
+                    if v.engine in motores and (v.id not in vozes_em_uso if apenas_livres else True)
+                ]
+                if cands:
+                    return cands[0]
 
-        # Fallback de segurança se a lista ainda estiver vazia
-        if not vozes_candidatas:
-            vozes_candidatas = [VOICE_CATALOG["edge_antonio"]]
+            return None
 
-        # 5. Anti-Colisão: Prioriza vozes ainda NÃO utilizadas no projeto
-        vozes_livres = [v for v in vozes_candidatas if v.id not in vozes_em_uso]
-        voz_escolhida = vozes_livres[0] if vozes_livres else vozes_candidatas[0]
+        # 5. Anti-Colisão: Primeiro tenta alocar qualquer voz livre compatível
+        voz_escolhida = buscar_candidatas(apenas_livres=True)
+
+        # Se todas as vozes do gênero já estiverem ocupadas, reutiliza a melhor compatível
+        if not voz_escolhida:
+            voz_escolhida = buscar_candidatas(apenas_livres=False) or VOICE_CATALOG["edge_antonio"]
 
         # 6. Baseline Acústico com Diferenciação se a voz estiver sendo reutilizada
         baseline_pitch = 0
