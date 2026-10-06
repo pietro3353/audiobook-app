@@ -19,6 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from src.emotions import (
+    EMOTION_MATRIX,
     PITCH_MAX,
     PITCH_MIN,
     RATE_MAX,
@@ -76,13 +77,14 @@ def test_emotions_and_clamping():
         character_personality="medroso",
     )
     print(f"   - Pânico (Neutro): Rate={rate}, Pitch={pitch}, Pausa={pause_m}x")
-    assert rate == "+12%"
-    assert pitch == "+6Hz"
-    assert pause_m == 0.6
+    panico_spec = EMOTION_MATRIX["panico"]
+    assert rate == f"{panico_spec.rate_delta:+d}%"
+    assert pitch == f"{panico_spec.pitch_delta:+d}Hz"
+    assert pause_m == panico_spec.pause_multiplier
     assert "pânico" in prompt.lower()
 
     # Teste 2: Clamping de Segurança (Extremos não devem estourar os limites)
-    # Jovem super acelerado (+15% baseline) em pânico (+12% delta) = +27% -> deve travar em RATE_MAX (+25%)
+    # Jovem super acelerado (+15% baseline) em pânico (+6% delta) = +21% -> deve travar em RATE_MAX (+12%)
     rate_clamped, pitch_clamped, _, _, _ = calculate_acoustic_parameters(
         baseline_rate_pct=15,
         baseline_pitch_hz=10,
@@ -93,7 +95,7 @@ def test_emotions_and_clamping():
     assert pitch_clamped == f"{PITCH_MAX:+d}Hz", f"Esperado {PITCH_MAX:+d}Hz, obteve {pitch_clamped}"
     print(f"   - Clamping Máximo: Rate={rate_clamped} (Teto: {RATE_MAX}%), Pitch={pitch_clamped} (Teto: {PITCH_MAX}Hz)")
 
-    # Idoso lento (-15% baseline) em exaustão (-10% delta) = -25% -> deve travar em RATE_MIN (-20%)
+    # Idoso lento (-15% baseline) em exaustão (-8% delta) -> deve travar em RATE_MIN (-10%)
     rate_min, pitch_min, _, _, _ = calculate_acoustic_parameters(
         baseline_rate_pct=-15,
         baseline_pitch_hz=-10,
@@ -168,7 +170,7 @@ def test_project_manager_and_smart_casting():
         accent="brasileiro",
         personality="curiosa e elétrica",
     )
-    assert aninha.baseline.pitch_offset_hz >= 5, "Pitch de criança deve ser elevado"
+    assert aninha.baseline.pitch_offset_hz >= 2, "Pitch de criança deve ser elevado sutilmente"
     print(f"   - Criança alocada: {aninha.name} -> {aninha.voice_id} com pitch base de {aninha.baseline.pitch_offset_hz}Hz")
 
     # 6. Anti-Colisão: Cria múltiplos personagens masculinos adultos

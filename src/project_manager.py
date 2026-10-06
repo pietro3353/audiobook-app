@@ -194,13 +194,16 @@ class ProjectManager:
         personality: str = "neutro",
         aliases: Optional[List[str]] = None,
         is_protagonist: bool = False,
+        preferred_engine: Optional[str] = None,
+        voice_id: Optional[str] = None,
     ) -> Character:
         """
         Escala uma voz para o personagem de forma inteligente e anti-colisão.
         1. Se já existir por nome ou alias, retorna o personagem existente.
-        2. Se for inédito, escolhe a melhor voz considerando sotaque, idade e estratégia do motor.
-        3. Configura a Identidade Dupla (Fallback Anti-Cota).
-        4. Diferencia vozes reutilizadas através de baseline acústico.
+        2. Se voice_id for fornecido, usa a voz especificada.
+        3. Se for inédito, escolhe a melhor voz considerando sotaque, idade e estratégia do motor.
+        4. Configura a Identidade Dupla (Fallback Anti-Cota).
+        5. Diferencia vozes reutilizadas através de baseline acústico.
         """
         bible = self.load_character_bible(project_slug)
         metadata = self.load_metadata(project_slug) or ProjectMetadata(
@@ -241,7 +244,10 @@ class ProjectManager:
         # Prioriza encontrar uma voz ainda NÃO em uso antes de cogitar repetir
         def buscar_candidatas(apenas_livres: bool = True) -> Optional[VoiceProfile]:
             # Se for protagonista em modo híbrido, busca PRIMEIRO em gemini
-            if metadata.engine_strategy == "hybrid" and is_protagonist:
+            if preferred_engine:
+                outros = tuple(m for m in ("edge", "kokoro", "gemini") if m != preferred_engine)
+                motores_ordem = [(preferred_engine,), outros]
+            elif metadata.engine_strategy == "hybrid" and is_protagonist:
                 motores_ordem = [("gemini",), ("edge", "kokoro")]
             else:
                 motores_ordem = [("edge", "kokoro")]
@@ -282,34 +288,36 @@ class ProjectManager:
             return None
 
         # 5. Anti-Colisão: Primeiro tenta alocar qualquer voz livre compatível
-        voz_escolhida = buscar_candidatas(apenas_livres=True)
+        if voice_id and voice_id in VOICE_CATALOG:
+            voz_escolhida = VOICE_CATALOG[voice_id]
+        else:
+            voz_escolhida = buscar_candidatas(apenas_livres=True)
 
-        # Se todas as vozes do gênero já estiverem ocupadas, reutiliza a melhor compatível
-        if not voz_escolhida:
-            voz_escolhida = buscar_candidatas(apenas_livres=False) or VOICE_CATALOG["edge_antonio"]
+            # Se todas as vozes do gênero já estiverem ocupadas, reutiliza a melhor compatível
+            if not voz_escolhida:
+                voz_escolhida = buscar_candidatas(apenas_livres=False) or VOICE_CATALOG["edge_antonio"]
 
-        # 6. Baseline Acústico com Diferenciação se a voz estiver sendo reutilizada
+        # 6. Baseline Acústico Sutil (sem distorções metálicas no vocoder)
         baseline_pitch = 0
         baseline_rate = 0
 
-        # Se a idade for criança e a voz for Thalita, ajusta tom para infantil
         if apparent_age == "crianca":
-            baseline_pitch = 6
-            baseline_rate = 3
-        elif apparent_age == "maduro":
-            baseline_pitch = -4
-            baseline_rate = -5
-        elif apparent_age == "jovem":
             baseline_pitch = 2
             baseline_rate = 2
+        elif apparent_age == "maduro":
+            baseline_pitch = -2
+            baseline_rate = -3
+        elif apparent_age == "jovem":
+            baseline_pitch = 1
+            baseline_rate = 1
 
         # Se a voz foi reutilizada (colisão inevitável pelo número de personagens),
-        # aplica uma assinatura sonora diferente para não soar idêntico
+        # aplica uma micro-diferenciação sonora sutil (apenas 1Hz)
         if voz_escolhida.id in vozes_em_uso:
             vezes_usada = sum(1 for c in bible.characters.values() if c.voice_id == voz_escolhida.id)
-            deslocamento = (vezes_usada % 2 * 2 - 1) * 3  # Alterna +3Hz / -3Hz
+            deslocamento = (vezes_usada % 2 * 2 - 1) * 1  # Alterna +1Hz / -1Hz
             baseline_pitch += deslocamento
-            baseline_rate += 2 if vezes_usada % 2 == 0 else -2
+            baseline_rate += 1 if vezes_usada % 2 == 0 else -1
 
         # 7. Identidade Dupla: Voz de Contingência Anti-Cota
         fallback_voice = find_fallback_voice(voz_escolhida)
@@ -386,4 +394,5 @@ class ProjectManager:
             pitch=pitch_str,
             volume=vol_str,
             acting_prompt=acting_prompt,
+            blend_recipe=character.blend_recipe,
         )

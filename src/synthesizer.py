@@ -39,10 +39,18 @@ class Synthesizer:
             return self._kokoro_instance
 
         self._kokoro_attempted = True
-        onnx_path = self.models_dir / "kokoro-v0_19.onnx"
-        voices_path = self.models_dir / "voices.json"
+        onnx_candidates = [
+            self.models_dir / "kokoro-v1.0.onnx",
+            self.models_dir / "kokoro-v0_19.onnx",
+        ]
+        voices_candidates = [
+            self.models_dir / "voices-v1.0.bin",
+            self.models_dir / "voices.json",
+        ]
+        onnx_path = next((p for p in onnx_candidates if p.exists()), None)
+        voices_path = next((p for p in voices_candidates if p.exists()), None)
 
-        if onnx_path.exists() and voices_path.exists():
+        if onnx_path and voices_path:
             try:
                 import kokoro_onnx
 
@@ -52,6 +60,8 @@ class Synthesizer:
             except Exception as e:
                 print(f"[Synthesizer] Aviso: Falha ao carregar modelo Kokoro: {e}")
                 self._kokoro_instance = None
+        else:
+            print("[Synthesizer] Aviso: Pesos do Kokoro não encontrados em data/models/")
 
         return self._kokoro_instance
 
@@ -134,9 +144,10 @@ class Synthesizer:
         self,
         text: str,
         voice_style: str,
-        output_path: Path,
+        blend_recipe: Optional[dict] = None,
+        output_path: Path = None,
     ) -> bool:
-        """Gera áudio usando Kokoro-ONNX local ou retorna False se ausente."""
+        """Gera áudio usando Kokoro-ONNX local com suporte a Voice Blending."""
         kokoro = self._get_kokoro_model()
         if not kokoro:
             return False
@@ -144,9 +155,31 @@ class Synthesizer:
         try:
             import soundfile as sf
 
+            # 1. Trata Voice Blending (fusão de vetores) se especificado
+            if blend_recipe and isinstance(blend_recipe, dict):
+                estilos = []
+                for v_name, peso in blend_recipe.items():
+                    try:
+                        s = kokoro.get_voice_style(v_name)
+                        estilos.append(s * peso)
+                    except Exception as e_style:
+                        print(f"[Synthesizer] Erro ao obter estilo {v_name}: {e_style}")
+                estilo_final = sum(estilos) if estilos else "pm_alex"
+            else:
+                # Trata voz direta ou busca estilo
+                v_clean = voice_style.replace("kokoro_", "")
+                if v_clean in kokoro.get_voices():
+                    estilo_final = v_clean
+                elif "dora" in v_clean:
+                    estilo_final = "pf_dora"
+                elif "santa" in v_clean:
+                    estilo_final = "pm_santa"
+                else:
+                    estilo_final = "pm_alex"
+
             samples, sample_rate = kokoro.create(
                 text=text,
-                voice=voice_style,
+                voice=estilo_final,
                 speed=1.0,
                 lang="pt-br",
             )
@@ -182,8 +215,10 @@ class Synthesizer:
                 sucesso = await self.synthesize_with_kokoro(
                     text=block.text,
                     voice_style=block.voice_id,
+                    blend_recipe=block.blend_recipe,
                     output_path=output_path,
                 )
+
 
             # 2. Se o primário for Edge-TTS ou se o motor avançado falhou, executa no Edge-TTS
             if not sucesso:

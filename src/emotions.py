@@ -24,18 +24,18 @@ class EmotionProfile:
 # LIMITES DE SEGURANÇA (ACOUSTIC CLAMPING)
 # Evitam distorções robóticas ou estalos na síntese neural
 # ==============================================================================
-RATE_MIN: int = -20
-RATE_MAX: int = 25
+RATE_MIN: int = -10
+RATE_MAX: int = 12
 
-PITCH_MIN: int = -12
-PITCH_MAX: int = 12
+PITCH_MIN: int = -3
+PITCH_MAX: int = 3
 
-VOLUME_MIN: int = -30
-VOLUME_MAX: int = 15
+VOLUME_MIN: int = -15
+VOLUME_MAX: int = 10
 
 
 # ==============================================================================
-# TABELA CALIBRADA DE EMOÇÕES
+# TABELA CALIBRADA DE EMOÇÕES (DELTAS SUTIS E NATURAIS)
 # ==============================================================================
 EMOTION_MATRIX: Dict[str, EmotionProfile] = {
     "neutro": EmotionProfile(
@@ -48,117 +48,118 @@ EMOTION_MATRIX: Dict[str, EmotionProfile] = {
     ),
     "sussurro": EmotionProfile(
         label="sussurro",
-        rate_delta=-6,
-        pitch_delta=-3,
-        volume_delta=-20,
+        rate_delta=-4,
+        pitch_delta=-1,
+        volume_delta=-10,
         pause_multiplier=1.2,
         acting_instruction="Fale em tom de sussurro contido, próximo e abafado, como se temesse ser ouvido.",
     ),
     "tenso": EmotionProfile(
         label="tenso",
-        rate_delta=5,
-        pitch_delta=3,
-        volume_delta=5,
+        rate_delta=3,
+        pitch_delta=1,
+        volume_delta=3,
         pause_multiplier=0.8,
         acting_instruction="Tom tenso, vigilante e em alerta. Frases rápidas e respiração curta.",
     ),
     "panico": EmotionProfile(
         label="panico",
-        rate_delta=12,
-        pitch_delta=6,
-        volume_delta=10,
-        pause_multiplier=0.6,
+        rate_delta=6,
+        pitch_delta=2,
+        volume_delta=6,
+        pause_multiplier=0.7,
         acting_instruction="Voz desesperada e trêmula de pânico, respiração ofegante e fala entrecortada.",
     ),
     "raiva": EmotionProfile(
         label="raiva",
-        rate_delta=8,
-        pitch_delta=4,
-        volume_delta=12,
-        pause_multiplier=0.7,
+        rate_delta=4,
+        pitch_delta=1,
+        volume_delta=6,
+        pause_multiplier=0.75,
         acting_instruction="Voz agressiva, firme e inflamada de fúria, com ênfase cortante nas palavras.",
     ),
     "tristeza": EmotionProfile(
         label="tristeza",
-        rate_delta=-8,
-        pitch_delta=-5,
-        volume_delta=-10,
-        pause_multiplier=1.4,
+        rate_delta=-4,
+        pitch_delta=-2,
+        volume_delta=-6,
+        pause_multiplier=1.3,
         acting_instruction="Voz lenta, abatida e embargada pelo luto ou pela melancolia profunda.",
     ),
     "alegria": EmotionProfile(
         label="alegria",
-        rate_delta=6,
-        pitch_delta=4,
-        volume_delta=5,
+        rate_delta=4,
+        pitch_delta=2,
+        volume_delta=4,
         pause_multiplier=0.85,
         acting_instruction="Tom aberto, caloroso e luminoso, transmitindo felicidade genuína.",
     ),
     "ironia_sarcasmo": EmotionProfile(
         label="ironia_sarcasmo",
-        rate_delta=-4,
-        pitch_delta=2,
+        rate_delta=-2,
+        pitch_delta=1,
         volume_delta=0,
         pause_multiplier=1.1,
         acting_instruction="Tom irônico, sarcástico e debochado, com um sorriso cínico evidente na fala.",
     ),
     "solene": EmotionProfile(
         label="solene",
-        rate_delta=-6,
-        pitch_delta=-4,
-        volume_delta=5,
+        rate_delta=-3,
+        pitch_delta=-2,
+        volume_delta=3,
         pause_multiplier=1.3,
         acting_instruction="Tom reverente, majestoso e cerimonioso, conferindo peso histórico e respeito.",
     ),
     "cansado_fraco": EmotionProfile(
         label="cansado_fraco",
-        rate_delta=-10,
-        pitch_delta=-4,
-        volume_delta=-15,
-        pause_multiplier=1.5,
+        rate_delta=-6,
+        pitch_delta=-2,
+        volume_delta=-10,
+        pause_multiplier=1.4,
         acting_instruction="Voz fraca, exausta e arrastada, como quem fala com esforço físico evidente.",
     ),
     "pensamento": EmotionProfile(
         label="pensamento",
-        rate_delta=-4,
-        pitch_delta=-2,
-        volume_delta=-10,
+        rate_delta=-3,
+        pitch_delta=-1,
+        volume_delta=-6,
         pause_multiplier=1.2,
         acting_instruction="Voz íntima de monólogo interno, suave, reflexiva e voltada para dentro.",
     ),
     "destaque_didatico": EmotionProfile(
         label="destaque_didatico",
-        rate_delta=-3,
+        rate_delta=-2,
         pitch_delta=0,
-        volume_delta=4,
-        pause_multiplier=1.25,
+        volume_delta=3,
+        pause_multiplier=1.2,
         acting_instruction="Tom professoral, didático e articulado, enfatizando conceitos fundamentais com pausas precisas.",
     ),
     "misterio": EmotionProfile(
         label="misterio",
-        rate_delta=-6,
-        pitch_delta=-3,
-        volume_delta=-8,
-        pause_multiplier=1.4,
+        rate_delta=-3,
+        pitch_delta=-1,
+        volume_delta=-4,
+        pause_multiplier=1.3,
         acting_instruction="Tom misterioso e conspiratório, criando suspense com cadência paciente e enigmática.",
     ),
     "animado": EmotionProfile(
         label="animado",
-        rate_delta=8,
-        pitch_delta=5,
-        volume_delta=8,
-        pause_multiplier=0.75,
+        rate_delta=5,
+        pitch_delta=2,
+        volume_delta=5,
+        pause_multiplier=0.8,
         acting_instruction="Tom eufórico, elétrico e vibrante, transbordando energia e urgência positiva.",
     ),
     "autoritario": EmotionProfile(
         label="autoritario",
         rate_delta=-2,
-        pitch_delta=-3,
-        volume_delta=10,
+        pitch_delta=-1,
+        volume_delta=6,
         pause_multiplier=1.0,
         acting_instruction="Comando inquestionável e imponente, voz grave, pausada e inflexível.",
     ),
 }
+
 
 
 # ==============================================================================

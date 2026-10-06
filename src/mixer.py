@@ -41,6 +41,29 @@ if ffmpeg_parent not in os.environ.get("PATH", ""):
 AudioSegment.converter = FFMPEG_EXE
 
 
+def generate_room_tone(duration_ms: int, frame_rate: int = 24000) -> AudioSegment:
+    """
+    Gera um levíssimo ruído de ambiente de estúdio/cabine (-56 dBFS)
+    para preencher as pausas e evitar o efeito de 'vácuo digital absoluto' (noise gating).
+    """
+    import numpy as np
+
+    num_samples = int(frame_rate * (duration_ms / 1000.0))
+    if num_samples <= 0:
+        return AudioSegment.empty()
+
+    # Ruído suave contínuo simulando ruído térmico/acústico de estúdio (-56 dBFS)
+    amplitude = 42.0
+    noise = np.random.normal(0, amplitude, num_samples).astype(np.int16)
+
+    return AudioSegment(
+        noise.tobytes(),
+        frame_rate=frame_rate,
+        sample_width=2,
+        channels=1,
+    )
+
+
 class AudioMixer:
     """Controlador de masterização e concatenação de áudio."""
 
@@ -56,8 +79,8 @@ class AudioMixer:
         output_normalized_path: Path,
     ) -> Path:
         """
-        Padroniza taxa de amostragem (24kHz), mono, equaliza volume de pico (headroom 1.0)
-        e anexa os milissegundos exatos de silêncio de respiração cênica.
+        Padroniza taxa de amostragem (24kHz), mono, equaliza volume de pico (headroom 1.0),
+        aplica micro-fades (30ms) nas bordas da fala e anexa pausa com ambiente orgânico de estúdio.
         """
         if not raw_audio_path.exists() or raw_audio_path.stat().st_size == 0:
             raise FileNotFoundError(f"Arquivo de áudio bruto ausente ou vazio: {raw_audio_path}")
@@ -68,16 +91,20 @@ class AudioMixer:
         # 2. Padronização para 24.000 Hz, 1 canal (mono)
         segmento = segmento.set_frame_rate(24000).set_channels(1)
 
-        # 3. Nivelamento de Volume (Loudness / Peak Normalization com 1.0 dB de headroom)
+        # 3. Micro-fades (30ms) na entrada e na saída da fala para eliminar estalos e cortes abruptos
+        if len(segmento) > 60:
+            segmento = segmento.fade_in(30).fade_out(30)
+
+        # 4. Nivelamento de Volume (Loudness / Peak Normalization com 1.0 dB de headroom)
         segmento_normalizado = effects.normalize(segmento, headroom=1.0)
 
-        # 4. Geração do silêncio preciso de respiração
-        silencio_dramatico = AudioSegment.silent(duration=max(100, pause_after_ms), frame_rate=24000)
+        # 5. Geração do ambiente acústico orgânico nas pausas (evita o vácuo artificial)
+        pausa_ambiente = generate_room_tone(duration_ms=max(100, pause_after_ms), frame_rate=24000)
 
-        # 5. União da fala com sua pausa
-        bloco_final = segmento_normalizado + silencio_dramatico
+        # 6. União da fala com sua pausa
+        bloco_final = segmento_normalizado + pausa_ambiente
 
-        # 6. Exportação em MP3 padrão 192k
+        # 7. Exportação em MP3 padrão 192k
         output_normalized_path.parent.mkdir(parents=True, exist_ok=True)
         bloco_final.export(str(output_normalized_path), format="mp3", bitrate="192k")
 

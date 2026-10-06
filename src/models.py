@@ -164,6 +164,9 @@ class SpeechBlock(BaseModel):
     # Instrução Cênica em Linguagem Natural (Gemini Audio)
     acting_prompt: Optional[str] = None
 
+    # Receita de Voice Blending (Kokoro)
+    blend_recipe: Optional[Dict[str, float]] = None
+
 
 class ChapterScript(BaseModel):
     """Roteiro completo de um capítulo estruturado em falas sequenciais."""
