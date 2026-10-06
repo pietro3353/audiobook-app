@@ -26,10 +26,14 @@ MAX_CONCURRENT_REQUESTS = 4
 class Synthesizer:
     """Motor de síntese de voz multi-motor com contingência automática."""
 
-    def __init__(self, models_dir: Path = Path("data") / "models"):
+    def __init__(
+        self,
+        models_dir: Path = Path("data") / "models",
+        gemini_api_key: Optional[str] = None,
+    ):
         self.models_dir = Path(models_dir)
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
         self._kokoro_instance = None
         self._kokoro_attempted = False
 
@@ -69,10 +73,10 @@ class Synthesizer:
         self,
         text: str,
         voice_id: str,
-        rate: str,
-        pitch: str,
-        volume: str,
-        output_path: Path,
+        rate: str = "+0%",
+        pitch: str = "+0Hz",
+        volume: str = "+0%",
+        output_path: Optional[Path] = None,
     ):
         """Gera áudio usando a API gratuita do Edge-TTS."""
         # Se voice_id for um ID do catálogo (ex: 'edge_antonio'), resolve para o código do motor
@@ -86,7 +90,9 @@ class Synthesizer:
             pitch=pitch,
             volume=volume,
         )
-        await communicate.save(str(output_path))
+        if output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            await communicate.save(str(output_path))
 
     async def synthesize_with_gemini(
         self,
@@ -105,8 +111,15 @@ class Synthesizer:
 
             client = genai.Client(api_key=self.gemini_api_key)
 
-            # Prepara a instrução cênica com o texto
-            prompt_completo = f"Instrução cênica: {acting_prompt}\nTexto a ler: {text}" if acting_prompt else text
+            # Prepara a instrução cênica com ênfase em atuação humana e contexto emocional
+            if acting_prompt:
+                prompt_completo = (
+                    f"Você é um ator interpretando uma fala para um audiolivro profissional em português do Brasil.\n"
+                    f"Direção cênica, tom de voz e respiração: {acting_prompt}\n"
+                    f"Interprete com máxima naturalidade humana a seguinte fala: \"{text}\""
+                )
+            else:
+                prompt_completo = f"Leia com voz expressiva e natural de audiolivro: \"{text}\""
 
             # Voz padrão caso venha com prefixo
             nome_limpo = voice_name.replace("gemini_", "").capitalize()
@@ -147,16 +160,21 @@ class Synthesizer:
         blend_recipe: Optional[dict] = None,
         output_path: Path = None,
     ) -> bool:
-        """Gera áudio usando Kokoro-ONNX local com suporte a Voice Blending."""
+        """Gera áudio usando Kokoro-ONNX local com suporte a Voice Blending homogêneo."""
         kokoro = self._get_kokoro_model()
         if not kokoro:
             return False
 
         try:
             import soundfile as sf
+            from src.voices import validate_same_gender_blend
 
             # 1. Trata Voice Blending (fusão de vetores) se especificado
             if blend_recipe and isinstance(blend_recipe, dict):
+                # Trava de segurança: Garante que fusões sejam apenas entre vozes do mesmo gênero
+                if not validate_same_gender_blend(blend_recipe):
+                    print("[Synthesizer] Alerta: Mistura de gêneros opostos bloqueada no Kokoro. Usando voz base.")
+
                 estilos = []
                 for v_name, peso in blend_recipe.items():
                     try:
@@ -195,9 +213,14 @@ class Synthesizer:
         block: SpeechBlock,
         output_path: Path,
     ):
-        """Sintetiza um bloco atômico de fala aplicando concorrência e contingência."""
-        # Smart Resume: Se o bloco já existe com tamanho válido (> 0 bytes), pula
+        """Sintetiza um bloco atômico de fala aplicando concorrência e transparência total de motores."""
+        texto_a_sintetizar = block.text_for_tts or block.text
+
+        # Smart Resume: Se o bloco já existe com tamanho válido (> 0 bytes), apenas atualiza auditoria
         if output_path.exists() and output_path.stat().st_size > 500:
+            if not block.actual_engine:
+                block.actual_engine = block.engine
+                block.actual_voice_id = block.voice_id
             return
 
         async with self.semaphore:
@@ -206,23 +229,35 @@ class Synthesizer:
             # 1. Tenta sintetizar pelo motor primário
             if block.engine == "gemini":
                 sucesso = await self.synthesize_with_gemini(
-                    text=block.text,
+                    text=texto_a_sintetizar,
                     voice_name=block.voice_id,
                     acting_prompt=block.acting_prompt,
                     output_path=output_path,
                 )
+                if sucesso:
+                    block.actual_engine = "gemini"
+                    block.actual_voice_id = block.voice_id
+                    block.fallback_triggered = False
+                else:
+                    block.fallback_triggered = True
+                    block.fallback_reason = "Gemini indisponível ou limite de cota"
             elif block.engine == "kokoro":
                 sucesso = await self.synthesize_with_kokoro(
-                    text=block.text,
+                    text=texto_a_sintetizar,
                     voice_style=block.voice_id,
                     blend_recipe=block.blend_recipe,
                     output_path=output_path,
                 )
-
+                if sucesso:
+                    block.actual_engine = "kokoro"
+                    block.actual_voice_id = block.voice_id
+                    block.fallback_triggered = False
+                else:
+                    block.fallback_triggered = True
+                    block.fallback_reason = "Kokoro local indisponível"
 
             # 2. Se o primário for Edge-TTS ou se o motor avançado falhou, executa no Edge-TTS
             if not sucesso:
-                # Usa a voz de fallback se tiver chaveado de outro motor
                 voz_cand = block.voice_id if block.engine == "edge" else block.fallback_voice_id
                 
                 # Resolve com certeza para uma voz válida do Edge-TTS
@@ -237,13 +272,19 @@ class Synthesizer:
                     voz_final = fb_prof.engine_voice_id if (fb_prof and fb_prof.engine == "edge") else "pt-BR-AntonioNeural"
 
                 await self.synthesize_with_edge(
-                    text=block.text,
+                    text=texto_a_sintetizar,
                     voice_id=voz_final,
                     rate=block.rate,
                     pitch=block.pitch,
                     volume=block.volume,
                     output_path=output_path,
                 )
+                block.actual_engine = "edge"
+                block.actual_voice_id = voz_cand
+                if block.engine != "edge":
+                    block.fallback_triggered = True
+                    if not block.fallback_reason:
+                        block.fallback_reason = f"Fallback ativado de {block.engine} para edge"
 
     async def synthesize_chapter(
         self,
@@ -276,3 +317,65 @@ class Synthesizer:
         await asyncio.gather(*tasks)
 
         return arquivos_esperados
+
+    async def generate_voice_sample(
+        self,
+        voice_id: str,
+        sample_text: Optional[str] = None,
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Gera uma amostra rápida de voz de ~2 segundos para audição prévia no Streamlit Studio.
+        """
+        texto = sample_text or "Olá! Esta é uma demonstração da minha voz para o seu audiolivro."
+        if not output_path:
+            samples_dir = Path("data") / "temp" / "samples"
+            samples_dir.mkdir(parents=True, exist_ok=True)
+            output_path = samples_dir / f"sample_{voice_id}.mp3"
+        else:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if output_path.exists() and output_path.stat().st_size > 1000:
+            return output_path
+
+        from src.voices import find_fallback_voice
+        prof = get_voice_by_id(voice_id)
+        if not prof:
+            prof = get_voice_by_id("edge_antonio")
+
+        if prof.engine == "kokoro":
+            sucesso = await self.synthesize_with_kokoro(
+                text=texto,
+                voice_style=prof.id,
+                blend_recipe=prof.blend_recipe,
+                output_path=output_path,
+            )
+            if not sucesso:
+                await self.synthesize_with_edge(
+                    text=texto,
+                    voice_id="pt-BR-AntonioNeural",
+                    output_path=output_path,
+                )
+        elif prof.engine == "gemini":
+            sucesso = await self.synthesize_with_gemini(
+                text=texto,
+                voice_name=prof.id,
+                acting_prompt="Tom simpático, claro e caloroso de apresentação.",
+                output_path=output_path,
+            )
+            if not sucesso:
+                fb = find_fallback_voice(prof)
+                await self.synthesize_with_edge(
+                    text=texto,
+                    voice_id=fb.engine_voice_id,
+                    output_path=output_path,
+                )
+        else:
+            await self.synthesize_with_edge(
+                text=texto,
+                voice_id=prof.engine_voice_id,
+                output_path=output_path,
+            )
+
+        return output_path

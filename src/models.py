@@ -161,11 +161,35 @@ class SpeechBlock(BaseModel):
     pitch: str = "+0Hz"
     volume: str = "+0%"
 
+    # Texto Enriquecido para Interpretação (Pontuação Dramática e Pausas)
+    text_for_tts: Optional[str] = Field(
+        default=None,
+        description="Texto enriquecido com reticências (...) e pontuações expressivas para o TTS",
+    )
+
     # Instrução Cênica em Linguagem Natural (Gemini Audio)
     acting_prompt: Optional[str] = None
 
     # Receita de Voice Blending (Kokoro)
     blend_recipe: Optional[Dict[str, float]] = None
+
+    # Auditoria e Transparência de Renderização (Fim do Fallback Oculto)
+    actual_engine: Optional[str] = Field(
+        default=None,
+        description="Motor que efetivamente gerou o áudio (ex: 'gemini', 'kokoro', 'edge')",
+    )
+    actual_voice_id: Optional[str] = Field(
+        default=None,
+        description="Voz efetivamente utilizada na síntese",
+    )
+    fallback_triggered: bool = Field(
+        default=False,
+        description="Indica se o motor primário falhou e o áudio caiu em contingência",
+    )
+    fallback_reason: Optional[str] = Field(
+        default=None,
+        description="Motivo da ativação do fallback (ex: 'chave ausente', 'cota esgotada')",
+    )
 
 
 class ChapterScript(BaseModel):

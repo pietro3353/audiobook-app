@@ -77,16 +77,41 @@ class AudioMixer:
         raw_audio_path: Path,
         pause_after_ms: int,
         output_normalized_path: Path,
+        is_kokoro: bool = False,
+        enable_kokoro_eq: bool = True,
+        enable_room_tone: bool = True,
     ) -> Path:
         """
         Padroniza taxa de amostragem (24kHz), mono, equaliza volume de pico (headroom 1.0),
-        aplica micro-fades (30ms) nas bordas da fala e anexa pausa com ambiente orgânico de estúdio.
+        aplica micro-fades (30ms) nas bordas da fala, equalização de brilho no Kokoro e anexa pausa.
         """
         if not raw_audio_path.exists() or raw_audio_path.stat().st_size == 0:
             raise FileNotFoundError(f"Arquivo de áudio bruto ausente ou vazio: {raw_audio_path}")
 
-        # 1. Carrega o segmento
-        segmento = AudioSegment.from_file(str(raw_audio_path))
+        # 1. Carrega o segmento bruto ou com equalização de presença nos agudos (+2.5dB) para Kokoro
+        caminho_leitura = str(raw_audio_path)
+        temp_eq_path = None
+        if is_kokoro and enable_kokoro_eq:
+            try:
+                temp_eq_path = output_normalized_path.parent / f"_temp_eq_{raw_audio_path.stem}.mp3"
+                cmd_eq = [
+                    self.ffmpeg_path, "-y", "-i", str(raw_audio_path),
+                    "-af", "treble=g=2.5:f=3500:w=0.7",
+                    "-c:a", "libmp3lame", "-b:a", "192k",
+                    str(temp_eq_path)
+                ]
+                res_eq = subprocess.run(cmd_eq, capture_output=True, text=True)
+                if res_eq.returncode == 0 and temp_eq_path.exists():
+                    caminho_leitura = str(temp_eq_path)
+            except Exception:
+                caminho_leitura = str(raw_audio_path)
+
+        segmento = AudioSegment.from_file(caminho_leitura)
+        if temp_eq_path and temp_eq_path.exists():
+            try:
+                temp_eq_path.unlink()
+            except Exception:
+                pass
 
         # 2. Padronização para 24.000 Hz, 1 canal (mono)
         segmento = segmento.set_frame_rate(24000).set_channels(1)
@@ -98,8 +123,12 @@ class AudioMixer:
         # 4. Nivelamento de Volume (Loudness / Peak Normalization com 1.0 dB de headroom)
         segmento_normalizado = effects.normalize(segmento, headroom=1.0)
 
-        # 5. Geração do ambiente acústico orgânico nas pausas (evita o vácuo artificial)
-        pausa_ambiente = generate_room_tone(duration_ms=max(100, pause_after_ms), frame_rate=24000)
+        # 5. Geração do ambiente acústico orgânico nas pausas (ou silêncio limpo se desativado)
+        duracao_pausa = max(100, pause_after_ms)
+        if enable_room_tone:
+            pausa_ambiente = generate_room_tone(duration_ms=duracao_pausa, frame_rate=24000)
+        else:
+            pausa_ambiente = AudioSegment.silent(duration=duracao_pausa, frame_rate=24000)
 
         # 6. União da fala com sua pausa
         bloco_final = segmento_normalizado + pausa_ambiente
@@ -177,6 +206,8 @@ class AudioMixer:
         raw_chunks: List[Path],
         output_chapter_mp3: Path,
         temp_dir: Optional[Path] = None,
+        enable_kokoro_eq: bool = True,
+        enable_room_tone: bool = True,
     ) -> Path:
         """
         Masteriza todas as falas de um capítulo com suas pausas e gera o MP3 final do capítulo.
@@ -193,10 +224,15 @@ class AudioMixer:
 
         for i, (bloco, raw_chunk) in enumerate(zip(script.blocks, raw_chunks)):
             norm_path = base_temp / f"norm_{i:04d}.mp3"
+            motor_efetivo = getattr(bloco, "actual_engine", None) or bloco.engine
+            is_kokoro = (motor_efetivo == "kokoro")
             self.normalize_and_add_pause(
                 raw_audio_path=raw_chunk,
                 pause_after_ms=bloco.pause_after_ms,
                 output_normalized_path=norm_path,
+                is_kokoro=is_kokoro,
+                enable_kokoro_eq=enable_kokoro_eq,
+                enable_room_tone=enable_room_tone,
             )
             blocos_normalizados.append(norm_path)
 

@@ -125,13 +125,38 @@ def extract_from_txt_or_md(file_path: Path) -> str:
     raise ValueError(f"Não foi possível decodificar o arquivo {file_path}")
 
 
-def extract_from_pdf(file_path: Path) -> str:
-    """Extrai texto de arquivo PDF utilizando PyMuPDF (fitz)."""
+def get_pdf_page_count(file_input: Any) -> int:
+    """Retorna a contagem total de páginas de um arquivo PDF instantaneamente."""
     import fitz  # PyMuPDF
 
-    doc = fitz.open(file_path)
+    if isinstance(file_input, bytes):
+        doc = fitz.open(stream=file_input, filetype="pdf")
+    else:
+        doc = fitz.open(file_input)
+    total = len(doc)
+    doc.close()
+    return total
+
+
+def extract_from_pdf(
+    file_input: Any,
+    start_page: int = 1,
+    end_page: Optional[int] = None,
+) -> str:
+    """Extrai texto de arquivo PDF ou buffer de bytes com suporte a intervalo de páginas."""
+    import fitz  # PyMuPDF
+
+    if isinstance(file_input, bytes):
+        doc = fitz.open(stream=file_input, filetype="pdf")
+    else:
+        doc = fitz.open(file_input)
+
+    total_paginas = len(doc)
+    inicio = max(0, start_page - 1)
+    fim = min(total_paginas, end_page) if end_page is not None else total_paginas
+
     paginas = []
-    for num_pag in range(len(doc)):
+    for num_pag in range(inicio, fim):
         pagina = doc[num_pag]
         paginas.append(pagina.get_text("text"))
     doc.close()

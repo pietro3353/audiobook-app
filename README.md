@@ -189,3 +189,22 @@ Copie o arquivo `.env.example` para `.env` e preencha sua chave da API do Gemini
 cp .env.example .env
 ```
 Obtenha sua chave no [Google AI Studio](https://aistudio.google.com/).
+
+---
+
+## 🖥️ Estúdio Web Interativo (Streamlit)
+
+Para testar livros e documentos em PDF com interface visual completa:
+
+```bash
+streamlit run app.py
+```
+Acesse no seu navegador: `http://localhost:8501`
+
+### Funcionalidades do Estúdio:
+1. **Upload de PDFs Reais:** Leitura instantânea do total de páginas com PyMuPDF e seletor de intervalo de páginas e parágrafos para testes rápidos.
+2. **Bíblia de Personagens com Prévia Sonora (2s):** Altere a voz e motor de qualquer personagem na tela e ouça uma demonstração instantânea antes de renderizar.
+3. **Teste Rápido de 3 Falas:** Botão para renderizar em ~4 segundos o início da cena e verificar a transição entre atores.
+4. **Equalização e Room Tone:** Chave para ativar reforço de brilho nos agudos do Kokoro (+2.5dB) e ambiente contínuo de estúdio (-56 dBFS).
+5. **Transparência e Auditoria:** Badges visuais indicando se o áudio foi gerado pelo `Kokoro HF`, `Gemini Acted` ou `Edge-TTS`, com alertas de contingência.
+

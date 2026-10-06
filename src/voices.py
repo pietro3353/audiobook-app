@@ -295,7 +295,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         supports_pitch_rate=False,
         description="Voz masculina envelhecida, profunda e pesada. Perfeita para idosos e mentores.",
     ),
-    # Presets de Fusão Matemática (Voice Blending) do Kokoro
+    # Presets de Fusão Matemática Homogênea (Apenas Mesmo Gênero) do Kokoro
     "kokoro_blend_anciao": VoiceProfile(
         id="kokoro_blend_anciao",
         name="Mestre Ancião (Fusão)",
@@ -308,7 +308,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         is_blend=True,
         blend_recipe={"pm_santa": 0.70, "pm_alex": 0.30},
         supports_pitch_rate=False,
-        description="Fusão matemática: 70% Santa + 30% Alex. Cria um timbre único de senhor sábio ou ranzinza.",
+        description="Fusão masculina: 70% Santa + 30% Alex. Voz idosa, rouca e sábia com fonética brasileira.",
     ),
     "kokoro_blend_jovem_dinamico": VoiceProfile(
         id="kokoro_blend_jovem_dinamico",
@@ -318,25 +318,53 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         apparent_age="jovem",
         accent="brasileiro",
         timbre="agil_expressivo",
-        engine_voice_id="blend_pm_alex_60_pf_dora_40",
+        engine_voice_id="blend_pm_alex_70_am_michael_30",
         is_blend=True,
-        blend_recipe={"pm_alex": 0.60, "pf_dora": 0.40},
+        blend_recipe={"pm_alex": 0.70, "am_michael": 0.30},
         supports_pitch_rate=False,
-        description="Fusão: 60% Alex + 40% Dora. Tom juvenil leve, ágil e vibrante.",
+        description="Fusão masculina: 70% Alex + 30% Michael. Timbre juvenil ágil, heróico e expressivo.",
+    ),
+    "kokoro_blend_guerreiro": VoiceProfile(
+        id="kokoro_blend_guerreiro",
+        name="Guerreiro Imponente (Fusão)",
+        engine="kokoro",
+        gender="M",
+        apparent_age="adulto",
+        accent="brasileiro",
+        timbre="grave_imponente",
+        engine_voice_id="blend_pm_alex_50_am_fenrir_50",
+        is_blend=True,
+        blend_recipe={"pm_alex": 0.50, "am_fenrir": 0.50},
+        supports_pitch_rate=False,
+        description="Fusão masculina: 50% Alex + 50% Fenrir. Tom encorpado, resoluto e autoritário.",
+    ),
+    "kokoro_blend_menina_doce": VoiceProfile(
+        id="kokoro_blend_menina_doce",
+        name="Jovem Serena (Fusão)",
+        engine="kokoro",
+        gender="F",
+        apparent_age="jovem",
+        accent="brasileiro",
+        timbre="doce_cristalina",
+        engine_voice_id="blend_pf_dora_70_af_bella_30",
+        is_blend=True,
+        blend_recipe={"pf_dora": 0.70, "af_bella": 0.30},
+        supports_pitch_rate=False,
+        description="Fusão feminina: 70% Dora + 30% Bella. Voz meiga, delicada e natural.",
     ),
     "kokoro_blend_mulher_madura": VoiceProfile(
         id="kokoro_blend_mulher_madura",
-        name="Matriarca (Fusão)",
+        name="Matriarca Expressiva (Fusão)",
         engine="kokoro",
         gender="F",
         apparent_age="maduro",
         accent="brasileiro",
-        timbre="aveludada_profunda",
-        engine_voice_id="blend_pf_dora_60_pm_santa_40",
+        timbre="aveludada_firme",
+        engine_voice_id="blend_pf_dora_60_af_sarah_40",
         is_blend=True,
-        blend_recipe={"pf_dora": 0.60, "pm_santa": 0.40},
+        blend_recipe={"pf_dora": 0.60, "af_sarah": 0.40},
         supports_pitch_rate=False,
-        description="Fusão: 60% Dora + 40% Santa. Tom feminino maduro, aveludado e com presença cênica.",
+        description="Fusão feminina: 60% Dora + 40% Sarah. Timbre aveludado, maduro e com autoridade cênica.",
     ),
     # --------------------------------------------------------------------------
     # GEMINI AUDIO TTS (Google AI Studio - 30+ Vozes com Atuação por Prompt)
@@ -527,3 +555,18 @@ def find_fallback_voice(primary_voice: VoiceProfile) -> VoiceProfile:
 
     # Fallback supremo
     return VOICE_CATALOG["edge_antonio"]
+
+
+def validate_same_gender_blend(recipe: Dict[str, float]) -> bool:
+    """
+    Valida se todas as vozes em uma receita de fusão compartilham estritamente o mesmo gênero.
+    Previne distorções e timbres artificiais causados pela mistura de vozes masculinas e femininas.
+    """
+    if not recipe:
+        return True
+    genders = set()
+    for v_name in recipe.keys():
+        v_clean = v_name.strip().lower()
+        if len(v_clean) >= 2 and v_clean[1] in ("m", "f"):
+            genders.add("M" if v_clean[1] == "m" else "F")
+    return len(genders) <= 1

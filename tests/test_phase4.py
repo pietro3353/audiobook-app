@@ -99,7 +99,7 @@ def test_phase4_end_to_end_and_generate_demo():
 
     print(f"   - [Narrador]: Voz {narrador.voice_id} ({narrador.engine}) -> Sóbrio, sem distorção")
     print(f"   - [{pierre.name}]: Voz {pierre.voice_id} ({pierre.engine}) -> Sotaque francês nativo")
-    print(f"   - [{arthur.name}]: Voz {arthur.voice_id} ({arthur.engine}) -> Kokoro Blend (60% Alex + 40% Dora)")
+    print(f"   - [{arthur.name}]: Voz {arthur.voice_id} ({arthur.engine}) -> Kokoro Blend (70% Alex + 30% Michael)")
     print(f"   - [{aninha.name}]: Voz {aninha.voice_id} ({aninha.engine}) -> Kokoro Dora (Hugging Face)")
     print(f"   - [{anciao.name}]: Voz {anciao.voice_id} ({anciao.engine}) -> Kokoro Blend (70% Santa + 30% Alex)")
 

@@ -50,7 +50,15 @@ class DirectedSpeech(BaseModel):
         description="Rótulo emocional: neutro, sussurro, tenso, panico, raiva, tristeza, alegria, ironia_sarcasmo, solene, cansado_fraco, pensamento, destaque_didatico, misterio, animado ou autoritario",
     )
     text: str = Field(
-        description="Texto exato a ser falado, enriquecido apenas com pontuações dramáticas expressivas para o TTS",
+        description="Texto exato verbatim a ser falado (preserva 100% das palavras para validação léxica)",
+    )
+    text_for_tts: str = Field(
+        default="",
+        description="Texto enriquecido com reticências (...), travessões de pausa e ênfases expressivas para guiar o ritmo da voz",
+    )
+    acting_prompt: str = Field(
+        default="",
+        description="Diretriz explícita de atuação cênica (tom de voz, intenção dramática, respiração) para o Gemini TTS",
     )
     pause_after_ms: int = Field(
         default=600,
@@ -320,6 +328,10 @@ class Director:
                 tipo = "narracao"
                 emocao = "destaque_didatico" if metadata.mode == "non_fiction" else "neutro"
 
+            text_tts = p
+            if p.startswith("—") or p.startswith("-"):
+                text_tts = p.replace("—", "— ... ", 1).replace("-", "— ... ", 1)
+
             bloco = self.pm.create_speech_block(
                 character=narrador,
                 text=p,
@@ -327,6 +339,7 @@ class Director:
                 emotion_label=emocao,
                 index=idx,
                 pause_base_ms=600 if not eh_dialogo else 450,
+                text_for_tts=text_tts,
             )
             blocos.append(bloco)
 
@@ -396,6 +409,8 @@ class Director:
                         emotion_label=sp.emotion,
                         index=bloco_index_global + len(blocos_chunk),
                         pause_base_ms=sp.pause_after_ms,
+                        text_for_tts=sp.text_for_tts if sp.text_for_tts else sp.text,
+                        custom_acting_prompt=sp.acting_prompt if sp.acting_prompt else None,
                     )
                     blocos_chunk.append(bloco)
 

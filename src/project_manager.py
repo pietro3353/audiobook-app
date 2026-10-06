@@ -360,6 +360,8 @@ class ProjectManager:
         emotion_label: str = "neutro",
         index: int = 0,
         pause_base_ms: int = 600,
+        text_for_tts: Optional[str] = None,
+        custom_acting_prompt: Optional[str] = None,
     ) -> SpeechBlock:
         """Constrói um bloco atômico de fala calculando os parâmetros acústicos e de atuação."""
         rate_str, pitch_str, vol_str, pause_mult, acting_prompt = calculate_acoustic_parameters(
@@ -370,6 +372,7 @@ class ProjectManager:
             character_personality=character.personality,
         )
 
+        prompt_final = custom_acting_prompt or acting_prompt
         pause_final_ms = int(pause_base_ms * pause_mult)
 
         # Resgata o código de voz bruto do motor para Edge-TTS
@@ -384,6 +387,7 @@ class ProjectManager:
             character_id=character.id,
             speech_type=speech_type,
             text=text.strip(),
+            text_for_tts=text_for_tts.strip() if text_for_tts else text.strip(),
             emotion=emotion_label,
             pause_after_ms=pause_final_ms,
             engine=character.engine,
@@ -393,6 +397,6 @@ class ProjectManager:
             rate=rate_str,
             pitch=pitch_str,
             volume=vol_str,
-            acting_prompt=acting_prompt,
+            acting_prompt=prompt_final,
             blend_recipe=character.blend_recipe,
         )
