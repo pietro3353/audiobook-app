@@ -163,9 +163,15 @@ async function handleFileSelected(file) {
         const endInput = document.getElementById("endPageInput");
         endInput.max = data.total_pages;
         endInput.value = Math.min(3, data.total_pages);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        const errMsg = err.detail || res.statusText || "Não foi possível ler as páginas do PDF.";
+        badge.textContent = `⚠️ Erro ao ler PDF: ${errMsg}`;
+        alert(`Erro ao ler páginas do PDF: ${errMsg}`);
       }
     } catch (e) {
-      badge.textContent = "Erro ao ler páginas do PDF";
+      badge.textContent = "Erro de conexão ao ler páginas do PDF";
+      alert(`Erro de conexão ao ler páginas do PDF: ${e.message || e}`);
     }
   } else {
     pdfControls.classList.add("hidden");
@@ -201,10 +207,12 @@ async function extractDocumentScope() {
       txtArea.value = data.curated_text || "";
       updateTextMetrics(txtArea.value);
     } else {
-      alert("Erro ao extrair o documento.");
+      const err = await res.json().catch(() => ({}));
+      const errMsg = err.detail || res.statusText || "Erro ao extrair o documento.";
+      alert(`⚠️ Erro na extração: ${errMsg}`);
     }
   } catch (e) {
-    alert("Falha na conexão com a API de extração.");
+    alert(`Falha na conexão com a API de extração: ${e.message || e}`);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -253,10 +261,12 @@ async function runDirector() {
       renderCastGrid();
       renderScriptTimeline();
     } else {
-      alert("Erro durante a execução do Diretor.");
+      const err = await res.json().catch(() => ({}));
+      const errMsg = err.detail || res.statusText || "Erro desconhecido ao processar o roteiro.";
+      alert(`⚠️ Erro na Direção: ${errMsg}`);
     }
   } catch (e) {
-    alert("Falha de conexão com o motor do Diretor.");
+    alert(`Falha de conexão com o motor do Diretor: ${e.message || e}`);
   } finally {
     btn.disabled = false;
     btn.textContent = "🎬 Analisar e Dirigir Cena";
@@ -357,9 +367,12 @@ async function playVoiceSample(voiceId, btnEl) {
       const audioEl = document.getElementById("previewAudioElement");
       audioEl.src = `${API_BASE}${data.audio_url}`;
       audioEl.play();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(`Erro ao reproduzir amostra sonora: ${err.detail || res.statusText}`);
     }
   } catch (e) {
-    alert("Erro ao reproduzir amostra sonora.");
+    alert(`Falha ao reproduzir amostra sonora: ${e.message || e}`);
   } finally {
     btnEl.disabled = false;
     btnEl.textContent = originalText;
@@ -453,10 +466,14 @@ async function startRender(quickTest = false) {
       // Renderiza a lista de auditoria
       renderAuditList(data.audit || []);
     } else {
-      alert("Erro durante a síntese de áudio.");
+      const err = await res.json().catch(() => ({}));
+      const errMsg = err.detail || res.statusText || "Erro durante a síntese de áudio.";
+      progressText.textContent = `❌ ${errMsg}`;
+      alert(`⚠️ Erro na Renderização: ${errMsg}`);
     }
   } catch (e) {
-    alert("Falha de conexão durante a renderização.");
+    progressText.textContent = `❌ Falha de conexão: ${e.message || e}`;
+    alert(`Falha de conexão durante a renderização: ${e.message || e}`);
   } finally {
     btnQuick.disabled = false;
     btnFull.disabled = false;
@@ -597,9 +614,12 @@ function initEventListeners() {
         alert("Chave salva com sucesso!");
         modalSettings.classList.add("hidden");
         await checkBackendStatus();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Erro ao salvar chave: ${err.detail || res.statusText}`);
       }
     } catch (e) {
-      alert("Erro ao salvar chave.");
+      alert(`Falha ao salvar chave: ${e.message || e}`);
     }
   });
 
@@ -623,9 +643,12 @@ function initEventListeners() {
         state.currentSlug = slug;
         await loadProjects();
         await loadCurrentProjectData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Erro ao criar projeto: ${err.detail || res.statusText}`);
       }
     } catch (e) {
-      alert("Erro ao criar projeto.");
+      alert(`Falha ao criar projeto: ${e.message || e}`);
     }
   });
 }

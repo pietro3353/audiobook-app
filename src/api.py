@@ -272,12 +272,18 @@ async def generate_voice_preview(req: VoicePreviewRequest):
 @app.post("/api/extract/pdf/page-count")
 async def get_pdf_pages(file: UploadFile = File(...)):
     """Lê instantaneamente o total de páginas de um arquivo PDF."""
-    conteudo = await file.read()
     try:
+        conteudo = await file.read()
+        if not conteudo:
+            raise HTTPException(status_code=400, detail="O arquivo enviado está vazio (0 bytes).")
         total = get_pdf_page_count(conteudo)
         return {"filename": file.filename, "total_pages": total}
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro ao analisar PDF: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao analisar o arquivo PDF: {str(e)}")
 
 
 @app.post("/api/extract")
@@ -288,10 +294,12 @@ async def extract_and_cure_document(
     max_paragraphs: Optional[int] = Form(None),
 ):
     """Extrai e cura texto de arquivo PDF, EPUB, TXT ou MD com controle de escopo."""
-    conteudo = await file.read()
-    nome_arq = file.filename.lower()
-
     try:
+        conteudo = await file.read()
+        if not conteudo:
+            raise HTTPException(status_code=400, detail="O arquivo enviado está vazio (0 bytes).")
+        nome_arq = file.filename.lower() if file.filename else ""
+
         if nome_arq.endswith(".pdf"):
             raw_text = extract_from_pdf(conteudo, start_page=start_page, end_page=end_page)
         elif nome_arq.endswith((".txt", ".md")):
@@ -301,15 +309,22 @@ async def extract_and_cure_document(
             temp_epub.parent.mkdir(parents=True, exist_ok=True)
             with open(temp_epub, "wb") as f_ep:
                 f_ep.write(conteudo)
-            raw_text = extract_file(temp_epub)
-            if temp_epub.exists():
-                temp_epub.unlink()
+            try:
+                raw_text = extract_file(temp_epub)
+            finally:
+                if temp_epub.exists():
+                    temp_epub.unlink()
         else:
             raise HTTPException(status_code=400, detail="Formato não suportado. Use PDF, EPUB, TXT ou MD.")
 
         texto_curado = cure_text(raw_text)
-        paragrafos = [p for p in texto_curado.split("\n\n") if p.strip()]
+        if not texto_curado.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Texto extraído está vazio. Verifique se o arquivo possui texto legível (não escaneado) nas páginas escolhidas."
+            )
 
+        paragrafos = [p for p in texto_curado.split("\n\n") if p.strip()]
         if max_paragraphs and len(paragrafos) > max_paragraphs:
             texto_curado = "\n\n".join(paragrafos[:max_paragraphs])
             paragrafos = paragrafos[:max_paragraphs]
@@ -323,8 +338,12 @@ async def extract_and_cure_document(
             "chapters_detected": len(capitulos),
             "chapters": capitulos,
         }
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro na extração: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro na extração do documento: {str(e)}")
 
 
 # ==============================================================================
@@ -334,20 +353,38 @@ async def extract_and_cure_document(
 @app.post("/api/projects/{slug}/direct")
 def direct_scene(slug: str, req: DirectChapterRequest):
     """Executa a Direção Cênica e gera o ChapterScript estruturado."""
-    director = Director(project_manager=pm)
-    script = director.direct_chapter(
-        project_slug=slug,
-        chapter_number=req.chapter_number,
-        chapter_title=req.chapter_title,
-        chapter_content=req.chapter_content,
-        force_express=req.force_express,
-    )
-    bible = pm.load_character_bible(slug)
-    return {
-        "success": True,
-        "script": script.model_dump(),
-        "characters": [c.model_dump() for c in bible.characters.values()],
-    }
+    try:
+        # Garante que o projeto e sua pasta existam no workspace
+        meta = pm.load_metadata(slug)
+        if not meta:
+            meta = pm.create_project(
+                slug=slug,
+                title=slug.replace("_", " ").title(),
+                mode="fiction",
+                engine_strategy="hybrid",
+            )
+
+        if not req.chapter_content.strip():
+            raise HTTPException(status_code=400, detail="O texto da cena a ser dirigida não pode estar vazio.")
+
+        director = Director(project_manager=pm)
+        script = director.direct_chapter(
+            project_slug=slug,
+            chapter_number=req.chapter_number,
+            chapter_title=req.chapter_title,
+            chapter_content=req.chapter_content,
+            force_express=req.force_express,
+        )
+        bible = pm.load_character_bible(slug)
+        return {
+            "success": True,
+            "script": script.model_dump(),
+            "characters": [c.model_dump() for c in bible.characters.values()],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro na execução do Diretor: {str(e)}")
 
 
 # ==============================================================================
@@ -360,66 +397,71 @@ async def render_audio(slug: str, req: RenderChapterRequest):
     Renderiza o capítulo (Completo ou Teste Rápido de 3 Falas) com transparência
     total de qual motor gerou cada fala e masterização de estúdio.
     """
-    script_original = pm.load_chapter_script(slug, req.chapter_number)
-    if not script_original or not script_original.blocks:
-        raise HTTPException(status_code=400, detail="Nenhum roteiro encontrado para renderizar.")
+    try:
+        script_original = pm.load_chapter_script(slug, req.chapter_number)
+        if not script_original or not script_original.blocks:
+            raise HTTPException(status_code=400, detail="Nenhum roteiro encontrado para renderizar.")
 
-    blocos_alvo = script_original.blocks[:3] if req.quick_test else script_original.blocks
-    subscript = ChapterScript(
-        chapter_number=script_original.chapter_number,
-        title=f"{script_original.title} ({'3 Falas' if req.quick_test else 'Completo'})",
-        blocks=blocos_alvo,
-        total_chars=sum(len(b.text) for b in blocos_alvo),
-    )
+        blocos_alvo = script_original.blocks[:3] if req.quick_test else script_original.blocks
+        subscript = ChapterScript(
+            chapter_number=script_original.chapter_number,
+            title=f"{script_original.title} ({'3 Falas' if req.quick_test else 'Completo'})",
+            blocks=blocos_alvo,
+            total_chars=sum(len(b.text) for b in blocos_alvo),
+        )
 
-    synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
-    temp_dir = pm.get_project_dir(slug) / "temp" / f"cap_{subscript.chapter_number:02d}"
+        synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
+        temp_dir = pm.get_project_dir(slug) / "temp" / f"cap_{subscript.chapter_number:02d}"
 
-    # 1. Síntese concorrente
-    chunks_brutos = await synth.synthesize_chapter(
-        script=subscript,
-        project_slug=slug,
-        temp_dir=temp_dir,
-    )
+        # 1. Síntese concorrente
+        chunks_brutos = await synth.synthesize_chapter(
+            script=subscript,
+            project_slug=slug,
+            temp_dir=temp_dir,
+        )
 
-    # 2. Masterização acústica
-    nome_saida = "demo_teste_3_falas.mp3" if req.quick_test else f"cap_{req.chapter_number:02d}.mp3"
-    saida_final = pm.get_project_dir(slug) / "output" / nome_saida
+        # 2. Masterização acústica
+        nome_saida = "demo_teste_3_falas.mp3" if req.quick_test else f"cap_{req.chapter_number:02d}.mp3"
+        saida_final = pm.get_project_dir(slug) / "output" / nome_saida
 
-    mixer.mix_chapter(
-        script=subscript,
-        raw_chunks=chunks_brutos,
-        output_chapter_mp3=saida_final,
-        enable_kokoro_eq=req.enable_kokoro_eq,
-        enable_room_tone=req.enable_room_tone,
-    )
+        mixer.mix_chapter(
+            script=subscript,
+            raw_chunks=chunks_brutos,
+            output_chapter_mp3=saida_final,
+            enable_kokoro_eq=req.enable_kokoro_eq,
+            enable_room_tone=req.enable_room_tone,
+        )
 
-    # Atualiza o script persistido com os campos de auditoria
-    pm.save_chapter_script(slug, script_original)
+        # Atualiza o script persistido com os campos de auditoria
+        pm.save_chapter_script(slug, script_original)
 
-    # Coleta dados de auditoria
-    auditoria = []
-    for b in subscript.blocks:
-        auditoria.append({
-            "index": b.index,
-            "character_id": b.character_id,
-            "actual_engine": b.actual_engine or b.engine,
-            "actual_voice_id": b.actual_voice_id or b.voice_id,
-            "fallback_triggered": b.fallback_triggered,
-            "fallback_reason": b.fallback_reason,
-            "text": b.text,
-        })
+        # Coleta dados de auditoria
+        auditoria = []
+        for b in subscript.blocks:
+            auditoria.append({
+                "index": b.index,
+                "character_id": b.character_id,
+                "actual_engine": b.actual_engine or b.engine,
+                "actual_voice_id": b.actual_voice_id or b.voice_id,
+                "fallback_triggered": b.fallback_triggered,
+                "fallback_reason": b.fallback_reason,
+                "text": b.text,
+            })
 
-    tamanho_kb = round(saida_final.stat().st_size / 1024, 1)
+        tamanho_kb = round(saida_final.stat().st_size / 1024, 1)
 
-    return {
-        "success": True,
-        "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
-        "filename": saida_final.name,
-        "size_kb": tamanho_kb,
-        "blocks_count": len(subscript.blocks),
-        "audit": auditoria,
-    }
+        return {
+            "success": True,
+            "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
+            "filename": saida_final.name,
+            "size_kb": tamanho_kb,
+            "blocks_count": len(subscript.blocks),
+            "audit": auditoria,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro durante a renderização de áudio: {str(e)}")
 
 
 # ==============================================================================

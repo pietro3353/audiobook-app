@@ -129,13 +129,20 @@ def get_pdf_page_count(file_input: Any) -> int:
     """Retorna a contagem total de páginas de um arquivo PDF instantaneamente."""
     import fitz  # PyMuPDF
 
-    if isinstance(file_input, bytes):
-        doc = fitz.open(stream=file_input, filetype="pdf")
-    else:
-        doc = fitz.open(file_input)
-    total = len(doc)
-    doc.close()
-    return total
+    try:
+        if isinstance(file_input, bytes):
+            if not file_input:
+                raise ValueError("O arquivo PDF enviado está vazio (0 bytes).")
+            doc = fitz.open(stream=file_input, filetype="pdf")
+        else:
+            doc = fitz.open(file_input)
+        total = len(doc)
+        doc.close()
+        if total == 0:
+            raise ValueError("O arquivo PDF possui 0 páginas.")
+        return total
+    except Exception as e:
+        raise ValueError(f"Falha ao ler o PDF: {e}")
 
 
 def extract_from_pdf(
@@ -146,21 +153,44 @@ def extract_from_pdf(
     """Extrai texto de arquivo PDF ou buffer de bytes com suporte a intervalo de páginas."""
     import fitz  # PyMuPDF
 
-    if isinstance(file_input, bytes):
-        doc = fitz.open(stream=file_input, filetype="pdf")
-    else:
-        doc = fitz.open(file_input)
+    try:
+        if isinstance(file_input, bytes):
+            if not file_input:
+                raise ValueError("O arquivo PDF enviado está vazio (0 bytes).")
+            doc = fitz.open(stream=file_input, filetype="pdf")
+        else:
+            doc = fitz.open(file_input)
+    except Exception as e:
+        raise ValueError(f"Não foi possível abrir o arquivo PDF: {e}")
 
     total_paginas = len(doc)
+    if total_paginas == 0:
+        doc.close()
+        raise ValueError("O arquivo PDF possui 0 páginas.")
+
     inicio = max(0, start_page - 1)
     fim = min(total_paginas, end_page) if end_page is not None else total_paginas
+
+    if inicio >= total_paginas:
+        doc.close()
+        raise ValueError(f"Página inicial ({start_page}) excede o total de páginas ({total_paginas}).")
 
     paginas = []
     for num_pag in range(inicio, fim):
         pagina = doc[num_pag]
-        paginas.append(pagina.get_text("text"))
+        txt = pagina.get_text("text")
+        if txt.strip():
+            paginas.append(txt)
     doc.close()
-    return "\n\n".join(paginas)
+
+    texto_unificado = "\n\n".join(paginas).strip()
+    if not texto_unificado:
+        raise ValueError(
+            "Nenhum texto legível foi encontrado nas páginas selecionadas. "
+            "O PDF pode conter apenas imagens escaneadas (sem camada de texto OCR) ou estar em branco."
+        )
+
+    return texto_unificado
 
 
 def extract_from_epub(file_path: Path) -> str:

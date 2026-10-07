@@ -133,7 +133,9 @@ class ProjectManager:
 
     def save_metadata(self, metadata: ProjectMetadata):
         """Salva os metadados do projeto em metadata.json."""
-        meta_file = self.get_project_dir(metadata.slug) / "metadata.json"
+        proj_dir = self.get_project_dir(metadata.slug)
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        meta_file = proj_dir / "metadata.json"
         metadata.updated_at = datetime.now(timezone.utc).isoformat()
         with open(meta_file, "w", encoding="utf-8") as f:
             f.write(metadata.model_dump_json(indent=2))
@@ -149,7 +151,9 @@ class ProjectManager:
 
     def save_character_bible(self, bible: CharacterBible):
         """Persiste a Bíblia de Personagens no disco."""
-        bible_file = self.get_project_dir(bible.project_slug) / "characters.json"
+        proj_dir = self.get_project_dir(bible.project_slug)
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        bible_file = proj_dir / "characters.json"
         with open(bible_file, "w", encoding="utf-8") as f:
             f.write(bible.model_dump_json(indent=2))
 
