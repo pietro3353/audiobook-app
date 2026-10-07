@@ -9,3 +9,6 @@ pymupdf>=1.25.0
 ebooklib>=0.18
 beautifulsoup4>=4.12.0
 streamlit>=1.40.0
+fastapi>=0.110.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9

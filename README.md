@@ -192,19 +192,37 @@ Obtenha sua chave no [Google AI Studio](https://aistudio.google.com/).
 
 ---
 
-## 🖥️ Estúdio Web Interativo (Streamlit)
+## 🚀 Estúdio Web Profissional (Fase 6 - Arquitetura Desacoplada)
 
-Para testar livros e documentos em PDF com interface visual completa:
+A interface oficial do projeto é uma **Single Page Application (SPA)** de alto nível visual (estética dark mode estilo ElevenLabs/Spotify) construída em **HTML5, CSS moderno e JavaScript puro** em `docs/`, conectada ao backend leve em **FastAPI** (`src/api.py`).
+
+### 1. Inicialização em 1-Clique no Windows
+Basta dar um duplo-clique no arquivo:
+```cmd
+start_studio.bat
+```
+Ele inicializa o servidor FastAPI em segundo plano na porta 8000 e abre automaticamente o navegador em `http://localhost:8000`.
+
+### 2. Inicialização via Linha de Comando
+```bash
+python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+Acesse no navegador: **[http://localhost:8000](http://localhost:8000)**
+
+### 3. Hospedagem Dupla e Futura Migração para Nuvem
+* **Localmente:** O FastAPI serve a aplicação diretamente na rota raiz (`http://localhost:8000`).
+* **GitHub Pages:** A pasta `docs/` está pronta para publicação nativa no GitHub Pages (`https://pietro3353.github.io/audiobook-app`).
+* **API Desacoplada:** O endereço da API no arquivo `docs/app.js` é uma variável central (`API_BASE`). Quando desejar migrar o backend para a nuvem (ex: Hugging Face Spaces ou servidor dedicado), basta apontar essa URL para o novo servidor sem alterar nenhuma linha da interface visual!
+
+---
+
+## 🖥️ Estúdio Alternativo em Streamlit
+
+Caso queira utilizar o protótipo anterior em Streamlit:
 
 ```bash
 streamlit run app.py
 ```
 Acesse no seu navegador: `http://localhost:8501`
 
-### Funcionalidades do Estúdio:
-1. **Upload de PDFs Reais:** Leitura instantânea do total de páginas com PyMuPDF e seletor de intervalo de páginas e parágrafos para testes rápidos.
-2. **Bíblia de Personagens com Prévia Sonora (2s):** Altere a voz e motor de qualquer personagem na tela e ouça uma demonstração instantânea antes de renderizar.
-3. **Teste Rápido de 3 Falas:** Botão para renderizar em ~4 segundos o início da cena e verificar a transição entre atores.
-4. **Equalização e Room Tone:** Chave para ativar reforço de brilho nos agudos do Kokoro (+2.5dB) e ambiente contínuo de estúdio (-56 dBFS).
-5. **Transparência e Auditoria:** Badges visuais indicando se o áudio foi gerado pelo `Kokoro HF`, `Gemini Acted` ou `Edge-TTS`, com alertas de contingência.
 

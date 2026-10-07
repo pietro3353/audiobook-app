@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AudioBook Studio AI - Estúdio de Áudio Dramático</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="dark-theme">
+  <!-- CABEÇALHO SUPERIOR -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="brand">
+        <span class="brand-icon">🎙️</span>
+        <div>
+          <h1 class="brand-title">AudioBook Studio <span class="brand-badge">AI</span></h1>
+          <p class="brand-sub">Engine Universal de Audiolivros & Rádio-Teatro</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="header-center">
+      <div class="project-selector-wrapper">
+        <label for="projectSelect">Projeto Ativo:</label>
+        <select id="projectSelect" class="styled-select"></select>
+        <button id="btnNewProject" class="btn btn-secondary btn-sm" title="Criar Novo Projeto">+ Novo</button>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div id="backendStatusBadge" class="status-badge status-offline">
+        <span class="status-dot"></span>
+        <span id="backendStatusText">Conectando...</span>
+      </div>
+      <button id="btnOpenSettings" class="btn btn-icon" title="Configurações">⚙️</button>
+    </div>
+  </header>
+
+  <!-- CONTEÚDO PRINCIPAL EM ETAPAS -->
+  <main class="main-container">
+    <!-- NAVEGAÇÃO DE ETAPAS -->
+    <nav class="steps-nav">
+      <button class="step-btn active" data-step="1">
+        <span class="step-num">1</span>
+        <span class="step-label">Importar & Escopo</span>
+      </button>
+      <button class="step-btn" data-step="2">
+        <span class="step-num">2</span>
+        <span class="step-label">Sala do Diretor & Elenco</span>
+      </button>
+      <button class="step-btn" data-step="3">
+        <span class="step-num">3</span>
+        <span class="step-label">Renderização & Player</span>
+      </button>
+    </nav>
+
+    <!-- PAINEL ETAPA 1: IMPORTAÇÃO E ESCOPO -->
+    <section id="step1Panel" class="step-panel active">
+      <div class="panel-grid">
+        <div class="card upload-card">
+          <div class="card-header">
+            <h2>📄 1. Importação de Documento ou PDF Real</h2>
+            <p>Arraste seu arquivo. Em PDFs reais de centenas de páginas, selecione o intervalo exato para testar.</p>
+          </div>
+
+          <div class="card-body">
+            <div id="dropZone" class="drop-zone">
+              <input type="file" id="fileInput" accept=".pdf,.epub,.txt,.md" class="file-input-hidden">
+              <div class="drop-zone-content">
+                <span class="upload-icon">📁</span>
+                <p class="upload-prompt">Arraste seu <strong>PDF, EPUB ou TXT</strong> aqui</p>
+                <span class="upload-hint">ou clique para procurar no computador</span>
+              </div>
+            </div>
+
+            <div id="pdfControls" class="pdf-controls hidden">
+              <div class="badge badge-info" id="pdfPageBadge">📚 PDF Detectado</div>
+              <div class="range-inputs">
+                <div class="input-group">
+                  <label for="startPageInput">Página Inicial:</label>
+                  <input type="number" id="startPageInput" min="1" value="1" class="styled-input">
+                </div>
+                <div class="input-group">
+                  <label for="endPageInput">Página Final:</label>
+                  <input type="number" id="endPageInput" min="1" value="3" class="styled-input">
+                </div>
+                <div class="input-group">
+                  <label for="maxParagsInput">Limite de Parágrafos:</label>
+                  <input type="number" id="maxParagsInput" min="1" max="100" value="10" class="styled-input">
+                </div>
+              </div>
+              <button id="btnExtractScope" class="btn btn-primary btn-block">⚡ Extrair e Curar Trecho do PDF</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card text-card">
+          <div class="card-header flex-between">
+            <div>
+              <h2>📝 Texto Curado (Pronto para a Direção)</h2>
+              <p>Texto limpo com remoção de rodapés, hifenizações e quebras artificiais.</p>
+            </div>
+            <div id="textMetrics" class="text-metrics">0 palavras</div>
+          </div>
+          <div class="card-body">
+            <textarea id="curatedTextArea" class="styled-textarea" placeholder="O texto extraído aparecerá aqui. Você pode editá-lo livremente antes da direção..."></textarea>
+            <div class="card-footer-actions">
+              <button id="btnGoToStep2" class="btn btn-accent">Avançar para Sala do Diretor ➔</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAINEL ETAPA 2: SALA DO DIRETOR & ELENCO -->
+    <section id="step2Panel" class="step-panel">
+      <div class="panel-grid-director">
+        <!-- CONTROLES DO DIRETOR -->
+        <div class="card director-action-card">
+          <div class="card-header">
+            <h2>🎬 Direção Cênica da Cena</h2>
+            <p>O Diretor analisa os diálogos, deduz personagens, emoções e pontuações expressivas.</p>
+          </div>
+          <div class="card-body">
+            <div class="director-mode-box">
+              <label class="radio-label">
+                <input type="radio" name="directorMode" value="gemini" checked>
+                <span>✨ <strong>Diretor Inteligente (Google Gemini)</strong><small>Interpretação psicológica e emoções profundas</small></span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="directorMode" value="express">
+                <span>⚡ <strong>Modo Express (100% Offline)</strong><small>Determinístico, rápido e sem dependência de internet</small></span>
+              </label>
+            </div>
+            <button id="btnRunDirector" class="btn btn-primary btn-block btn-lg">🎬 Analisar e Dirigir Cena</button>
+          </div>
+        </div>
+
+        <!-- ELENCO DA BÍBLIA -->
+        <div class="card cast-card">
+          <div class="card-header flex-between">
+            <div>
+              <h2>👥 Elenco Escalado (Bíblia de Personagens)</h2>
+              <p>Ouça amostras de 2 segundos de cada ator e ajuste o elenco sob demanda.</p>
+            </div>
+            <span id="castCountBadge" class="badge">0 atores</span>
+          </div>
+          <div class="card-body">
+            <div id="castGrid" class="cast-grid">
+              <div class="empty-state">Nenhum personagem escalado ainda. Clique em "Analisar e Dirigir Cena".</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ROTEIRO ESTRUTURADO -->
+      <div class="card script-card mt-4">
+        <div class="card-header flex-between">
+          <div>
+            <h2>📜 Roteiro Estruturado do Capítulo</h2>
+            <p>Falas sequenciais com pontuações dramáticas, tags emocionais e instruções de atuação.</p>
+          </div>
+          <span id="scriptBlocksBadge" class="badge badge-accent">0 falas</span>
+        </div>
+        <div class="card-body">
+          <div id="scriptTimeline" class="script-timeline">
+            <div class="empty-state">O roteiro gerado aparecerá aqui.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAINEL ETAPA 3: RENDERIZAÇÃO & PLAYER -->
+    <section id="step3Panel" class="step-panel">
+      <div class="card render-card">
+        <div class="card-header flex-between">
+          <div>
+            <h2>🎧 Renderização Multi-Motor e Masterização</h2>
+            <p>Sintetize com transparência total: você vê exatamente qual IA gerou cada trecho.</p>
+          </div>
+          <div class="render-buttons">
+            <button id="btnQuickRender" class="btn btn-secondary btn-lg" title="Gera apenas as 3 primeiras falas para teste rápido">⚡ Teste Rápido (3 Falas)</button>
+            <button id="btnFullRender" class="btn btn-primary btn-lg">🎙️ Renderizar Cena Completa</button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- BARRA DE PROGRESSO -->
+          <div id="renderProgressWrapper" class="progress-wrapper hidden">
+            <div class="progress-info">
+              <span id="progressStatusText">Sintetizando falas...</span>
+              <span id="progressPctText">0%</span>
+            </div>
+            <div class="progress-bar">
+              <div id="progressBarFill" class="progress-fill" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <!-- AUDITORIA DE MOTORES -->
+          <div class="audit-section mt-4">
+            <h3>🔍 Auditoria Visual de Execução dos Motores</h3>
+            <p class="section-desc">Garantia contra fallback invisível. Cada linha informa o motor real que gravou o áudio.</p>
+            <div id="auditList" class="audit-list">
+              <div class="empty-state">Renderize a cena para visualizar a auditoria de motores.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- BARRA DE REPRODUÇÃO FIXA NO RODAPÉ -->
+  <footer class="player-bar">
+    <div class="player-left">
+      <div class="now-playing-icon">🎵</div>
+      <div>
+        <div id="playerTitle" class="player-title">Nenhum áudio gerado</div>
+        <div id="playerMeta" class="player-meta">—</div>
+      </div>
+    </div>
+
+    <div class="player-center">
+      <audio id="mainAudioPlayer" controls class="custom-audio-player"></audio>
+    </div>
+
+    <div class="player-right">
+      <a id="btnDownloadAudio" class="btn btn-secondary btn-sm disabled" href="#" download>⬇️ Baixar MP3</a>
+    </div>
+  </footer>
+
+  <!-- MODAL DE CONFIGURAÇÕES -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>⚙️ Configurações do Estúdio</h3>
+        <button id="btnCloseSettings" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group">
+          <label for="inputApiKey">Chave API do Google AI Studio (Gemini):</label>
+          <input type="password" id="inputApiKey" placeholder="Cole sua chave AI Studio aqui..." class="styled-input">
+          <small class="input-hint">Habilita a atuação dramática por prompt e Diretor inteligente.</small>
+        </div>
+        <button id="btnSaveApiKey" class="btn btn-primary btn-sm mb-3">💾 Salvar Chave no .env</button>
+
+        <hr class="divider">
+
+        <h4>🎛️ Acústica & Masterização</h4>
+        <label class="checkbox-label">
+          <input type="checkbox" id="checkKokoroEq" checked>
+          <span>Equalização de Brilho no Kokoro (+2.5dB agudos)</span>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="checkRoomTone" checked>
+          <span>Room Tone Contínuo de Estúdio (-56 dBFS)</span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL NOVO PROJETO -->
+  <div id="newProjectModal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>➕ Criar Novo Projeto</h3>
+        <button id="btnCloseNewProject" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group">
+          <label for="newProjTitle">Título da Obra:</label>
+          <input type="text" id="newProjTitle" placeholder="Ex: O Retrato de Dorian Gray" class="styled-input">
+        </div>
+        <div class="input-group">
+          <label for="newProjSlug">Identificador (slug):</label>
+          <input type="text" id="newProjSlug" placeholder="Ex: dorian_gray" class="styled-input">
+        </div>
+        <div class="input-group">
+          <label for="newProjMode">Gênero:</label>
+          <select id="newProjMode" class="styled-select">
+            <option value="fiction">Ficção / Literatura</option>
+            <option value="non_fiction">Não-Ficção / Acadêmico</option>
+            <option value="summary">Resumo Narrado</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="newProjStrategy">Estratégia de Motores:</label>
+          <select id="newProjStrategy" class="styled-select">
+            <option value="hybrid">Híbrido (Gemini Diálogos + Kokoro/Edge)</option>
+            <option value="unlimited">100% Ilimitado (Kokoro Local + Edge-TTS)</option>
+          </select>
+        </div>
+        <button id="btnConfirmNewProject" class="btn btn-primary btn-block mt-3">Criar Projeto</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AUDIO ELEMENT PARA PREVIEW DE VOZ DE 2S -->
+  <audio id="previewAudioElement" class="hidden"></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
