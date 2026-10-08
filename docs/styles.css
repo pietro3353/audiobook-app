@@ -446,6 +446,17 @@ body {
   filter: brightness(1.1);
 }
 
+.btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #f87171;
+}
+.btn-danger:hover {
+  background: #ef4444;
+  color: white;
+  border-color: #ef4444;
+}
+
 .btn-sm {
   padding: 5px 10px;
   font-size: 0.75rem;

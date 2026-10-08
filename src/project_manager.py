@@ -248,6 +248,30 @@ class ProjectManager:
             if d.is_dir() and (d / "metadata.json").exists()
         ]
 
+    def save_source_text(self, slug: str, text: str):
+        """Salva o texto de trabalho atual do projeto em source_text.txt."""
+        proj_dir = self.get_project_dir(slug)
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        with open(proj_dir / "source_text.txt", "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def load_source_text(self, slug: str) -> str:
+        """Carrega o texto de trabalho do projeto ou retorna vazio se não houver."""
+        f = self.get_project_dir(slug) / "source_text.txt"
+        if f.exists():
+            with open(f, "r", encoding="utf-8") as fp:
+                return fp.read()
+        return ""
+
+    def delete_project(self, slug: str) -> bool:
+        """Exclui permanentemente a pasta do projeto em data/projects/<slug>/."""
+        proj_dir = self.get_project_dir(slug)
+        if proj_dir.exists():
+            import shutil
+            shutil.rmtree(proj_dir, ignore_errors=True)
+            return True
+        return False
+
     # ==========================================================================
     # SMART CASTING & RESOLUÇÃO DE ALIASES
     # ==========================================================================

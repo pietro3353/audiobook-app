@@ -105,6 +105,10 @@ class VoicePreviewRequest(BaseModel):
     sample_text: Optional[str] = None
 
 
+class SaveTextRequest(BaseModel):
+    text: str
+
+
 # ==============================================================================
 # 1. ROTAS DE STATUS & CONFIGURAÇÕES
 # ==============================================================================
@@ -188,6 +192,67 @@ def get_project(slug: str):
     if not meta:
         raise HTTPException(status_code=404, detail="Projeto não encontrado.")
     return meta.model_dump()
+
+
+@app.delete("/api/projects/{slug}")
+def delete_project(slug: str):
+    """Exclui permanentemente um projeto e todos os seus arquivos."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    sucesso = pm.delete_project(slug)
+    if not sucesso:
+        raise HTTPException(status_code=500, detail="Erro ao excluir a pasta do projeto.")
+    return {"success": True, "message": f"Projeto '{slug}' excluído com sucesso."}
+
+
+@app.get("/api/projects/{slug}/text")
+def get_project_text(slug: str):
+    """Retorna o texto de trabalho atualmente associado ao projeto."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    texto = pm.load_source_text(slug)
+    palavras = len(texto.strip().split()) if texto.strip() else 0
+    paragrafos = len([p for p in texto.split("\n\n") if p.strip()]) if texto.strip() else 0
+    return {
+        "slug": slug,
+        "text": texto,
+        "words_count": palavras,
+        "paragraphs_count": paragrafos,
+    }
+
+
+@app.put("/api/projects/{slug}/text")
+def update_project_text(slug: str, req: SaveTextRequest):
+    """Salva/atualiza o texto de trabalho do projeto."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    pm.save_source_text(slug, req.text)
+    return {"success": True, "message": "Texto salvo com sucesso."}
+
+
+@app.get("/api/projects/{slug}/audio")
+def get_project_audio_info(slug: str):
+    """Verifica se o projeto já possui áudio masterizado gerado."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    output_dir = pm.get_project_dir(slug) / "output"
+    cap1_mp3 = output_dir / "cap_01.mp3"
+    demo_mp3 = output_dir / "demo_teste_3_falas.mp3"
+    
+    alvo = cap1_mp3 if cap1_mp3.exists() else (demo_mp3 if demo_mp3.exists() else None)
+    if not alvo:
+        return {"has_audio": False}
+
+    script = pm.load_chapter_script(slug, 1)
+    blocks_count = len(script.blocks) if script and script.blocks else 0
+    
+    return {
+        "has_audio": True,
+        "audio_url": f"/api/audio/projects/{slug}/{alvo.name}",
+        "filename": alvo.name,
+        "size_kb": round(alvo.stat().st_size / 1024, 1),
+        "blocks_count": blocks_count,
+    }
 
 
 @app.get("/api/projects/{slug}/bible")
@@ -325,7 +390,7 @@ async def extract_and_cure_document(
             )
 
         paragrafos = [p for p in texto_curado.split("\n\n") if p.strip()]
-        if max_paragraphs and len(paragrafos) > max_paragraphs:
+        if max_paragraphs and max_paragraphs > 0 and len(paragrafos) > max_paragraphs:
             texto_curado = "\n\n".join(paragrafos[:max_paragraphs])
             paragrafos = paragrafos[:max_paragraphs]
 
@@ -375,6 +440,14 @@ def direct_scene(slug: str, req: DirectChapterRequest):
             chapter_content=req.chapter_content,
             force_express=req.force_express,
         )
+        # Remove áudios renderizados antigos deste capítulo para não tocar áudio de texto anterior
+        out_cap = pm.get_project_dir(slug) / "output" / f"cap_{req.chapter_number:02d}.mp3"
+        out_demo = pm.get_project_dir(slug) / "output" / "demo_teste_3_falas.mp3"
+        if out_cap.exists():
+            out_cap.unlink(missing_ok=True)
+        if out_demo.exists():
+            out_demo.unlink(missing_ok=True)
+
         bible = pm.load_character_bible(slug)
         return {
             "success": True,

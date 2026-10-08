@@ -77,15 +77,31 @@ async function loadProjects() {
     if (res.ok) {
       const data = await res.json();
       select.innerHTML = "";
-      (data.projects || []).forEach((p) => {
+      const projs = data.projects || [];
+
+      projs.forEach((p) => {
         const opt = document.createElement("option");
         opt.value = p.slug;
         opt.textContent = `${p.title} (${p.slug})`;
         if (p.slug === state.currentSlug) opt.selected = true;
         select.appendChild(opt);
       });
-      if (data.projects && data.projects.length > 0 && !select.value) {
-        state.currentSlug = data.projects[0].slug;
+
+      if (projs.length > 0) {
+        if (!state.currentSlug || !projs.some((p) => p.slug === state.currentSlug)) {
+          state.currentSlug = projs[0].slug;
+          select.value = state.currentSlug;
+        }
+      } else {
+        // Se a lista estiver vazia, cria projeto padrão
+        state.currentSlug = "meu_audiolivro";
+        await fetch(`${API_BASE}/api/projects`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slug: "meu_audiolivro", title: "Meu Audiolivro", mode: "fiction", engine_strategy: "hybrid" }),
+        });
+        await loadProjects();
+        return;
       }
     }
   } catch (e) {
@@ -96,7 +112,20 @@ async function loadProjects() {
 async function loadCurrentProjectData() {
   if (!state.currentSlug) return;
 
-  // Carrega Bíblia de Personagens
+  // 1. Carrega Texto Curado do Projeto
+  try {
+    const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/text`);
+    if (res.ok) {
+      const data = await res.json();
+      const txtArea = document.getElementById("curatedTextArea");
+      txtArea.value = data.text || "";
+      updateTextMetrics(txtArea.value);
+    }
+  } catch (e) {
+    console.error("Erro ao carregar Texto do Projeto:", e);
+  }
+
+  // 2. Carrega Bíblia de Personagens
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/bible`);
     if (res.ok) {
@@ -108,7 +137,7 @@ async function loadCurrentProjectData() {
     console.error("Erro ao carregar Bíblia:", e);
   }
 
-  // Carrega Roteiro existente do Capítulo 1
+  // 3. Carrega Roteiro existente do Capítulo 1
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/script/1`);
     if (res.ok) {
@@ -116,10 +145,28 @@ async function loadCurrentProjectData() {
       if (data.exists && data.script) {
         state.script = data.script;
         renderScriptTimeline();
+      } else {
+        state.script = null;
+        renderScriptTimeline();
       }
     }
   } catch (e) {
     console.error("Erro ao carregar Roteiro:", e);
+  }
+
+  // 4. Carrega Status do Áudio Renderizado
+  try {
+    const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/audio`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.has_audio) {
+        setupAudioPlayer(data, false);
+      } else {
+        resetAudioPlayer();
+      }
+    }
+  } catch (e) {
+    console.error("Erro ao verificar áudio do projeto:", e);
   }
 }
 
@@ -143,11 +190,16 @@ async function handleFileSelected(file) {
   state.selectedFile = file;
   const isPdf = file.name.toLowerCase().endsWith(".pdf");
   const pdfControls = document.getElementById("pdfControls");
+  const pdfPageInputsWrapper = document.getElementById("pdfPageInputsWrapper");
+  const badge = document.getElementById("pdfPageBadge");
+  const typeHint = document.getElementById("fileTypeHint");
+
+  pdfControls.classList.remove("hidden");
 
   if (isPdf) {
-    pdfControls.classList.remove("hidden");
-    const badge = document.getElementById("pdfPageBadge");
-    badge.textContent = "Lendo páginas do PDF...";
+    if (pdfPageInputsWrapper) pdfPageInputsWrapper.classList.remove("hidden");
+    badge.textContent = "⏳ Analisando páginas do PDF...";
+    if (typeHint) typeHint.textContent = `${file.name} (${Math.round(file.size / 1024)} KB)`;
 
     const formData = new FormData();
     formData.append("file", file);
@@ -174,8 +226,10 @@ async function handleFileSelected(file) {
       alert(`Erro de conexão ao ler páginas do PDF: ${e.message || e}`);
     }
   } else {
-    pdfControls.classList.add("hidden");
-    await extractDocumentScope();
+    // TXT, EPUB ou MD
+    if (pdfPageInputsWrapper) pdfPageInputsWrapper.classList.add("hidden");
+    badge.textContent = `📄 Arquivo: ${file.name}`;
+    if (typeHint) typeHint.textContent = `${Math.round(file.size / 1024)} KB • Texto puro`;
   }
 }
 
@@ -183,18 +237,28 @@ async function extractDocumentScope() {
   if (!state.selectedFile) return;
 
   const btn = document.getElementById("btnExtractScope");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Processando texto...";
+  }
 
   const formData = new FormData();
   formData.append("file", state.selectedFile);
 
-  const startPage = document.getElementById("startPageInput").value || 1;
-  const endPage = document.getElementById("endPageInput").value || 3;
-  const maxParags = document.getElementById("maxParagsInput").value || 10;
+  const isPdf = state.selectedFile.name.toLowerCase().endsWith(".pdf");
+  if (isPdf) {
+    const startPage = document.getElementById("startPageInput").value || 1;
+    const endPage = document.getElementById("endPageInput").value || 3;
+    formData.append("start_page", startPage);
+    formData.append("end_page", endPage);
+  }
 
-  formData.append("start_page", startPage);
-  formData.append("end_page", endPage);
-  formData.append("max_paragraphs", maxParags);
+  // Verifica se o usuário quer importar o documento completo ou limitar
+  const checkImportAll = document.getElementById("checkImportAll");
+  if (checkImportAll && !checkImportAll.checked) {
+    const maxParags = document.getElementById("maxParagsInput").value || 15;
+    formData.append("max_paragraphs", maxParags);
+  }
 
   try {
     const res = await fetch(`${API_BASE}/api/extract`, {
@@ -206,6 +270,9 @@ async function extractDocumentScope() {
       const txtArea = document.getElementById("curatedTextArea");
       txtArea.value = data.curated_text || "";
       updateTextMetrics(txtArea.value);
+
+      // Salva o texto automaticamente no projeto ativo
+      await saveProjectText(txtArea.value);
     } else {
       const err = await res.json().catch(() => ({}));
       const errMsg = err.detail || res.statusText || "Erro ao extrair o documento.";
@@ -214,7 +281,23 @@ async function extractDocumentScope() {
   } catch (e) {
     alert(`Falha na conexão com a API de extração: ${e.message || e}`);
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "⚡ Processar e Inserir no Editor";
+    }
+  }
+}
+
+async function saveProjectText(text) {
+  if (!state.currentSlug) return;
+  try {
+    await fetch(`${API_BASE}/api/projects/${state.currentSlug}/text`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) {
+    console.error("Erro ao salvar texto do projeto:", e);
   }
 }
 
@@ -493,7 +576,7 @@ async function startRender(quickTest = false) {
   }
 }
 
-function setupAudioPlayer(renderData) {
+function setupAudioPlayer(renderData, autoPlay = true) {
   const audioEl = document.getElementById("mainAudioPlayer");
   const titleEl = document.getElementById("playerTitle");
   const metaEl = document.getElementById("playerMeta");
@@ -501,13 +584,29 @@ function setupAudioPlayer(renderData) {
 
   const fullAudioUrl = `${API_BASE}${renderData.audio_url}`;
   audioEl.src = fullAudioUrl;
-  audioEl.play().catch(() => {});
+  if (autoPlay) {
+    audioEl.play().catch(() => {});
+  }
 
   titleEl.textContent = renderData.filename;
   metaEl.textContent = `${renderData.size_kb} KB • ${renderData.blocks_count} falas masterizadas`;
 
   downloadBtn.href = fullAudioUrl;
   downloadBtn.classList.remove("disabled");
+}
+
+function resetAudioPlayer() {
+  const audioEl = document.getElementById("mainAudioPlayer");
+  const titleEl = document.getElementById("playerTitle");
+  const metaEl = document.getElementById("playerMeta");
+  const downloadBtn = document.getElementById("btnDownloadAudio");
+
+  audioEl.src = "";
+  titleEl.textContent = "Nenhum áudio gerado";
+  metaEl.textContent = "Aguardando síntese";
+
+  downloadBtn.href = "#";
+  downloadBtn.classList.add("disabled");
 }
 
 function renderAuditList(auditItems) {
@@ -585,9 +684,23 @@ function initEventListeners() {
   // Botão de Extração com Escopo de PDF
   document.getElementById("btnExtractScope").addEventListener("click", extractDocumentScope);
 
-  // Contador de palavras do textarea
+  // Controle de limite de parágrafos
+  const checkImportAll = document.getElementById("checkImportAll");
+  const limitWrapper = document.getElementById("limitParagsWrapper");
+  if (checkImportAll && limitWrapper) {
+    checkImportAll.addEventListener("change", (e) => {
+      limitWrapper.classList.toggle("hidden", e.target.checked);
+    });
+  }
+
+  // Contador de palavras do textarea e auto-save com debounce
+  let textSaveTimeout = null;
   document.getElementById("curatedTextArea").addEventListener("input", (e) => {
     updateTextMetrics(e.target.value);
+    clearTimeout(textSaveTimeout);
+    textSaveTimeout = setTimeout(() => {
+      saveProjectText(e.target.value);
+    }, 800);
   });
 
   // Botão de Direção
@@ -602,6 +715,33 @@ function initEventListeners() {
     state.currentSlug = e.target.value;
     await loadCurrentProjectData();
   });
+
+  // Botão de Excluir Projeto
+  const btnDelete = document.getElementById("btnDeleteProject");
+  if (btnDelete) {
+    btnDelete.addEventListener("click", async () => {
+      if (!state.currentSlug) return;
+      const ok = confirm(`Tem certeza que deseja excluir o projeto "${state.currentSlug}"?\nTodos os roteiros, áudios e textos deste projeto serão excluídos permanentemente.`);
+      if (!ok) return;
+
+      try {
+        const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}`, {
+          method: "DELETE",
+        });
+        if (res.ok) {
+          state.currentSlug = null;
+          await loadProjects();
+          await loadCurrentProjectData();
+          alert("Projeto excluído com sucesso!");
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(`Erro ao excluir projeto: ${err.detail || res.statusText}`);
+        }
+      } catch (e) {
+        alert(`Falha ao excluir projeto: ${e.message || e}`);
+      }
+    });
+  }
 
   // Modais
   const modalSettings = document.getElementById("settingsModal");

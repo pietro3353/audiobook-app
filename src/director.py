@@ -215,6 +215,27 @@ TEXTO DO LOTE A SER DIRIGIDO (CUMPRA COM 100% DE FIDELIDADE):
 # ==============================================================================
 
 
+def get_cleaned_director_schema() -> Dict[str, Any]:
+    """
+    Retorna o JSON Schema de DirectedChunkResponse limpo, sem 'additionalProperties',
+    garantindo compatibilidade com a Gemini Developer API (Google AI Studio).
+    """
+    schema = DirectedChunkResponse.model_json_schema()
+
+    def _clean(d):
+        if isinstance(d, dict):
+            d.pop("additionalProperties", None)
+            d.pop("title", None)
+            for v in list(d.values()):
+                _clean(v)
+        elif isinstance(d, list):
+            for item in d:
+                _clean(item)
+
+    _clean(schema)
+    return schema
+
+
 class Director:
     """Orquestrador da direção dramática de livros e documentos."""
 
@@ -260,31 +281,64 @@ class Director:
             if instrucao_adicional:
                 prompt = f"{instrucao_adicional}\n\n{prompt}"
 
-            # Chamada com Structured Outputs nativo do Google GenAI (Modelos Lite de alta velocidade)
-            primary_model = os.getenv("GEMINI_DIRECTOR_MODEL", "gemini-3.5-flash-lite")
-            try:
-                response = client.models.generate_content(
-                    model=primary_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=DirectedChunkResponse,
-                        temperature=0.2,  # Baixa temperatura para estrita fidelidade
-                    ),
-                )
-            except Exception as e_model:
-                print(f"[Director] Tentando fallback para gemini-2.5-flash-lite ({e_model})...")
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash-lite",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=DirectedChunkResponse,
-                        temperature=0.2,
-                    ),
-                )
+            # Chamada compatível com a Gemini Developer API com resiliência a 503 e sobrecarga
+            schema = get_cleaned_director_schema()
+            candidatos = [
+                os.getenv("GEMINI_DIRECTOR_MODEL", "gemini-3.5-flash-lite"),
+                "gemini-2.5-flash-lite",
+                "gemini-2.5-flash",
+            ]
+            response = None
+            ultimo_erro = None
 
-            chunk_response: DirectedChunkResponse = response.parsed  # type: ignore
+            for mod in candidatos:
+                try:
+                    response = client.models.generate_content(
+                        model=mod,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=schema,
+                            temperature=0.2,
+                        ),
+                    )
+                    if response and response.text:
+                        break
+                except Exception as e_schema:
+                    print(f"[Director] Modelo {mod} com schema falhou ({e_schema}). Tentando formato JSON via prompt...")
+                    try:
+                        response = client.models.generate_content(
+                            model=mod,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                temperature=0.2,
+                            ),
+                        )
+                        if response and response.text:
+                            break
+                    except Exception as e_pure:
+                        ultimo_erro = e_pure
+                        print(f"[Director] Modelo {mod} falhou ({e_pure}). Tentando próximo candidato...")
+
+            if not response or not response.text:
+                raise RuntimeError(f"Não foi possível obter resposta do Gemini em nenhum modelo: {ultimo_erro}")
+
+            # Parse seguro do JSON retornado via Pydantic
+            raw_text = response.text.strip()
+            if raw_text.startswith("```"):
+                lines = raw_text.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                raw_text = "\n".join(lines).strip()
+
+            import json
+            data = json.loads(raw_text)
+            if isinstance(data, list):
+                data = {"speeches": data}
+            chunk_response: DirectedChunkResponse = DirectedChunkResponse.model_validate(data)
 
             # Validação de Integridade Léxica
             aprovado, ratio, msg = validate_lexical_fidelity(
@@ -440,4 +494,12 @@ class Director:
         )
 
         self.pm.save_chapter_script(project_slug, script)
+        self.pm.save_source_text(project_slug, chapter_content)
+
+        # Limpa chunks temporários de áudio anteriores deste capítulo para que um novo texto nunca se misture com o antigo
+        temp_cap_dir = self.pm.get_project_dir(project_slug) / "temp" / f"cap_{chapter_number:02d}"
+        if temp_cap_dir.exists():
+            import shutil
+            shutil.rmtree(temp_cap_dir, ignore_errors=True)
+
         return script
