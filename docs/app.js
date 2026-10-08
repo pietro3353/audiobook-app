@@ -323,6 +323,14 @@ function renderCastGrid() {
     sel.addEventListener("change", async (e) => {
       const charId = e.target.dataset.charId;
       const voiceId = e.target.value;
+
+      // Sincroniza imediatamente o botão de prévia acústica do card
+      const card = e.target.closest(".char-card");
+      if (card) {
+        const previewBtn = card.querySelector(".btn-preview-voice");
+        if (previewBtn) previewBtn.dataset.voiceId = voiceId;
+      }
+
       await updateCharacterVoice(charId, voiceId);
     });
   });
@@ -338,16 +346,20 @@ function renderCastGrid() {
 
 async function updateCharacterVoice(charId, voiceId) {
   try {
-    const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/bible/character/${charId}`, {
+    const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/characters/${charId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ voice_id: voiceId }),
     });
     if (res.ok) {
       await loadCurrentProjectData();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(`⚠️ Erro ao salvar voz: ${err.detail || res.statusText}`);
     }
   } catch (e) {
     console.error("Erro ao atualizar voz:", e);
+    alert(`Erro de conexão ao salvar voz: ${e.message || e}`);
   }
 }
 

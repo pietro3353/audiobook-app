@@ -38,7 +38,11 @@ from src.mixer import AudioMixer
 from src.models import ChapterScript, ProjectMetadata, SpeechBlock
 from src.project_manager import ProjectManager
 from src.synthesizer import Synthesizer
-from src.voices import VOICE_CATALOG, list_voices
+from src.voices import VOICE_CATALOG, find_fallback_voice, list_voices
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DOCS_DIR = BASE_DIR / "docs"
+DATA_DIR = BASE_DIR / "data"
 
 # Inicialização da aplicação FastAPI
 app = FastAPI(
@@ -56,8 +60,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializa instâncias globais
-pm = ProjectManager()
+# Inicializa instâncias globais ancoradas ao diretório raiz
+pm = ProjectManager(base_dir=DATA_DIR / "projects")
 mixer = AudioMixer()
 
 
@@ -111,8 +115,8 @@ def get_system_status():
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     tem_gemini = bool(gemini_key and gemini_key != "sua_chave_api_aqui")
     
-    kokoro_model = Path("data") / "models" / "kokoro-v1.0.onnx"
-    kokoro_voices = Path("data") / "models" / "voices-v1.0.bin"
+    kokoro_model = DATA_DIR / "models" / "kokoro-v1.0.onnx"
+    kokoro_voices = DATA_DIR / "models" / "voices-v1.0.bin"
     tem_kokoro = kokoro_model.exists() and kokoro_voices.exists()
 
     return {
@@ -131,7 +135,7 @@ def save_gemini_key(req: SaveKeyRequest):
         raise HTTPException(status_code=400, detail="Chave não pode ser vazia.")
 
     os.environ["GEMINI_API_KEY"] = key
-    env_file = Path(".env")
+    env_file = BASE_DIR / ".env"
     lines = []
     if env_file.exists():
         with open(env_file, "r", encoding="utf-8") as f:
@@ -193,27 +197,23 @@ def get_character_bible(slug: str):
     return bible.model_dump()
 
 
+@app.put("/api/projects/{slug}/characters/{char_id}")
 @app.put("/api/projects/{slug}/bible/character/{char_id}")
 def update_character(slug: str, char_id: str, req: UpdateCharacterRequest):
-    """Atualiza a voz ou atributos de um personagem na Bíblia."""
-    bible = pm.load_character_bible(slug)
-    char = bible.get(char_id)
-    if not char:
-        raise HTTPException(status_code=404, detail="Personagem não encontrado.")
-
-    if req.voice_id in VOICE_CATALOG:
-        prof = VOICE_CATALOG[req.voice_id]
-        char.voice_id = prof.id
-        char.engine = prof.engine
-        char.blend_recipe = prof.blend_recipe
-
-    if req.personality is not None:
-        char.personality = req.personality
-    if req.acting_style is not None:
-        char.acting_style = req.acting_style
-
-    pm.save_character_bible(bible)
-    return {"success": True, "character": char.model_dump()}
+    """Atualiza permanentemente a voz ou atributos de um personagem na Bíblia e propaga para os roteiros."""
+    try:
+        char = pm.update_character_voice(
+            slug=slug,
+            char_id=char_id,
+            voice_id=req.voice_id,
+            personality=req.personality,
+            acting_style=req.acting_style,
+        )
+        return {"success": True, "character": char.model_dump()}
+    except KeyError as ke:
+        raise HTTPException(status_code=404, detail=str(ke))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar personagem: {str(e)}")
 
 
 @app.get("/api/projects/{slug}/script/{chapter_number}")
@@ -410,6 +410,17 @@ async def render_audio(slug: str, req: RenderChapterRequest):
             total_chars=sum(len(b.text) for b in blocos_alvo),
         )
 
+        # Garante sincronização estrita com a Bíblia de Personagens mais recente
+        bible = pm.load_character_bible(slug)
+        for b in subscript.blocks:
+            char = bible.get(b.character_id) or (bible.get("narrador") if b.character_id in ("narrador", "narracao") else None)
+            if char:
+                b.voice_id = char.voice_id
+                b.engine = char.engine
+                b.blend_recipe = char.blend_recipe
+                b.fallback_voice_id = char.fallback_voice_id
+                b.fallback_engine = char.fallback_engine
+
         synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
         temp_dir = pm.get_project_dir(slug) / "temp" / f"cap_{subscript.chapter_number:02d}"
 
@@ -480,7 +491,7 @@ def stream_project_audio(slug: str, filename: str):
 @app.get("/api/audio/sample/{filename}")
 def stream_sample_audio(filename: str):
     """Transmite o arquivo MP3 de prévia de voz."""
-    arq = Path("data") / "temp" / "samples" / filename
+    arq = DATA_DIR / "temp" / "samples" / filename
     if not arq.exists():
         raise HTTPException(status_code=404, detail="Amostra de áudio não encontrada.")
     return FileResponse(path=str(arq), media_type="audio/mpeg", filename=filename)
@@ -490,6 +501,5 @@ def stream_sample_audio(filename: str):
 # 8. SERVIÇO DE ARQUIVOS ESTÁTICOS DO FRONTEND (docs/)
 # ==============================================================================
 
-docs_dir = Path("docs")
-if docs_dir.exists():
-    app.mount("/", StaticFiles(directory="docs", html=True), name="frontend")
+if DOCS_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(DOCS_DIR), html=True), name="frontend")

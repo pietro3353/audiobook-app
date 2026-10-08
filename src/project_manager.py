@@ -38,8 +38,9 @@ from src.voices import (
     list_voices,
 )
 
-# Diretório padrão para os workspaces de projetos
-DEFAULT_PROJECTS_DIR = Path("data") / "projects"
+# Diretório base absoluto para garantir funcionamento independente do CWD
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_PROJECTS_DIR = BASE_DIR / "data" / "projects"
 
 
 def slugify(text: str) -> str:
@@ -156,6 +157,69 @@ class ProjectManager:
         bible_file = proj_dir / "characters.json"
         with open(bible_file, "w", encoding="utf-8") as f:
             f.write(bible.model_dump_json(indent=2))
+
+    def update_character_voice(
+        self,
+        slug: str,
+        char_id: str,
+        voice_id: str,
+        personality: Optional[str] = None,
+        acting_style: Optional[str] = None,
+    ) -> Character:
+        """
+        Atualiza permanentemente a voz de um personagem na Bíblia e propaga
+        a nova voz para todos os roteiros já gerados no projeto.
+        """
+        bible = self.load_character_bible(slug)
+        char = bible.get(char_id)
+        if not char:
+            raise KeyError(f"Personagem '{char_id}' não encontrado na Bíblia do projeto '{slug}'.")
+
+        if voice_id in VOICE_CATALOG:
+            prof = VOICE_CATALOG[voice_id]
+            char.voice_id = prof.id
+            char.engine = prof.engine
+            char.blend_recipe = prof.blend_recipe
+            fb = find_fallback_voice(prof)
+            char.fallback_voice_id = fb.id
+            char.fallback_engine = fb.engine
+
+        if personality is not None:
+            char.personality = personality
+        if acting_style is not None:
+            char.acting_style = acting_style
+
+        self.save_character_bible(bible)
+
+        # Propaga a nova voz para todos os roteiros do projeto
+        scripts_dir = self.get_project_dir(slug) / "scripts"
+        if scripts_dir.exists():
+            for f in scripts_dir.glob("cap_*.json"):
+                try:
+                    with open(f, "r", encoding="utf-8") as sf:
+                        s_data = json.load(sf)
+                    script = ChapterScript(**s_data)
+                    alterou = False
+                    for b in script.blocks:
+                        if b.character_id == char_id or (char_id == "narrador" and b.character_id in ("narrador", "narracao")):
+                            b.voice_id = char.voice_id
+                            b.engine = char.engine
+                            b.blend_recipe = char.blend_recipe
+                            b.fallback_voice_id = char.fallback_voice_id
+                            b.fallback_engine = char.fallback_engine
+                            # Reseta auditoria para forçar nova síntese acústica
+                            b.actual_engine = None
+                            b.actual_voice_id = None
+                            b.fallback_triggered = False
+                            b.fallback_reason = None
+                            alterou = True
+                    if alterou:
+                        with open(f, "w", encoding="utf-8") as sf:
+                            sf.write(script.model_dump_json(indent=2))
+                except Exception as e:
+                    print(f"[ProjectManager] Aviso ao sincronizar roteiro {f.name}: {e}")
+
+        return char
 
     def load_chapter_script(self, slug: str, chapter_number: int) -> Optional[ChapterScript]:
         """Carrega o roteiro de um capítulo em scripts/cap_XX.json."""

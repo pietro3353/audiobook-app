@@ -126,20 +126,38 @@ class Synthesizer:
             if nome_limpo not in ("Puck", "Charon", "Kore", "Fenrir", "Aoede", "Zephyr", "Leda", "Orus"):
                 nome_limpo = "Puck"
 
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt_completo,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=nome_limpo
+            tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-lite-tts")
+            try:
+                response = client.models.generate_content(
+                    model=tts_model,
+                    contents=prompt_completo,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=nome_limpo
+                                )
                             )
-                        )
+                        ),
                     ),
-                ),
-            )
+                )
+            except Exception as e_tts:
+                print(f"[Synthesizer] Modelo {tts_model} falhou ({e_tts}). Tentando fallback gemini-2.5-flash-preview-tts...")
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash-preview-tts",
+                    contents=prompt_completo,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=nome_limpo
+                                )
+                            )
+                        ),
+                    ),
+                )
 
             # Extrai os bytes de áudio retornados pelo modelo
             for part in response.candidates[0].content.parts:
@@ -303,7 +321,8 @@ class Synthesizer:
         total_blocos = len(script.blocks)
 
         for i, block in enumerate(script.blocks):
-            bloco_path = base_temp / f"block_{i:04d}.mp3"
+            # Associa a voz atual ao nome do arquivo do bloco para invalidar cache ao trocar de voz
+            bloco_path = base_temp / f"block_{i:04d}_{block.voice_id}.mp3"
             arquivos_esperados.append(bloco_path)
 
             async def _executar_com_progresso(b=block, p=bloco_path, idx=i):

@@ -260,16 +260,29 @@ class Director:
             if instrucao_adicional:
                 prompt = f"{instrucao_adicional}\n\n{prompt}"
 
-            # Chamada com Structured Outputs nativo do Google GenAI
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=DirectedChunkResponse,
-                    temperature=0.2,  # Baixa temperatura para estrita fidelidade
-                ),
-            )
+            # Chamada com Structured Outputs nativo do Google GenAI (Modelos Lite de alta velocidade)
+            primary_model = os.getenv("GEMINI_DIRECTOR_MODEL", "gemini-3.5-flash-lite")
+            try:
+                response = client.models.generate_content(
+                    model=primary_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=DirectedChunkResponse,
+                        temperature=0.2,  # Baixa temperatura para estrita fidelidade
+                    ),
+                )
+            except Exception as e_model:
+                print(f"[Director] Tentando fallback para gemini-2.5-flash-lite ({e_model})...")
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash-lite",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=DirectedChunkResponse,
+                        temperature=0.2,
+                    ),
+                )
 
             chunk_response: DirectedChunkResponse = response.parsed  # type: ignore
 
