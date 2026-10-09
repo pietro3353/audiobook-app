@@ -106,7 +106,21 @@ class AudioMixer:
             except Exception:
                 caminho_leitura = str(raw_audio_path)
 
-        segmento = AudioSegment.from_file(caminho_leitura)
+        import io
+        try:
+            segmento = AudioSegment.from_file(caminho_leitura)
+        except Exception:
+            # Fallback resiliente: decodifica RIFF (WAV) ou PCM bruto (s16le, 24kHz, mono)
+            try:
+                with open(caminho_leitura, "rb") as f_raw:
+                    raw_b = f_raw.read()
+                if raw_b.startswith(b"RIFF"):
+                    segmento = AudioSegment.from_file(io.BytesIO(raw_b), format="wav")
+                else:
+                    segmento = AudioSegment(raw_b, sample_width=2, frame_rate=24000, channels=1)
+            except Exception as e_inner:
+                raise RuntimeError(f"Falha ao decodificar áudio {caminho_leitura}: {e_inner}")
+
         if temp_eq_path and temp_eq_path.exists():
             try:
                 temp_eq_path.unlink()

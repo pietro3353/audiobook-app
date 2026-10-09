@@ -174,12 +174,24 @@ class Synthesizer:
                             return False, "Cota diária da API do Gemini excedida (Free Tier)."
                         return False, f"Gemini indisponível: {err2_s}"
 
-                # Extrai os bytes de áudio retornados pelo modelo
+                # Extrai os bytes de áudio retornados pelo modelo e converte seguramente para MP3
                 if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                     for part in response.candidates[0].content.parts:
                         if part.inline_data and part.inline_data.data:
-                            with open(output_path, "wb") as f:
-                                f.write(part.inline_data.data)
+                            raw_data = part.inline_data.data
+                            import io
+                            from pydub import AudioSegment
+
+                            # Gemini pode retornar WAV (RIFF) ou PCM bruto (s16le, 24kHz, mono)
+                            if raw_data.startswith(b"RIFF"):
+                                seg = AudioSegment.from_file(io.BytesIO(raw_data), format="wav")
+                            elif raw_data.startswith(b"ID3") or raw_data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+                                seg = AudioSegment.from_file(io.BytesIO(raw_data), format="mp3")
+                            else:
+                                seg = AudioSegment(raw_data, sample_width=2, frame_rate=24000, channels=1)
+
+                            output_path.parent.mkdir(parents=True, exist_ok=True)
+                            seg.export(str(output_path), format="mp3", bitrate="192k")
                             return True, None
 
                 return False, "Nenhum dado de áudio retornado pelo Gemini."
