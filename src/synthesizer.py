@@ -10,7 +10,7 @@ Responsável por:
 import asyncio
 import os
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 from dotenv import load_dotenv
 
 import edge_tts
@@ -33,6 +33,7 @@ class Synthesizer:
     ):
         self.models_dir = Path(models_dir)
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        self.gemini_semaphore = asyncio.Semaphore(1)  # Gemini sequencial para evitar 503 Spikes e limite por minuto
         self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
         self._kokoro_instance = None
         self._kokoro_attempted = False
@@ -100,76 +101,94 @@ class Synthesizer:
         voice_name: str,
         acting_prompt: Optional[str],
         output_path: Path,
-    ) -> bool:
-        """Gera áudio utilizando a API do Gemini com prompt de interpretação."""
+    ) -> Tuple[bool, Optional[str]]:
+        """Gera áudio utilizando a API do Gemini com controle de concorrência e detecção de cota."""
         if not self.gemini_api_key or self.gemini_api_key == "sua_chave_api_aqui":
-            return False
+            return False, "Chave da API do Gemini não configurada."
 
-        try:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=self.gemini_api_key)
-
-            # Prepara a instrução cênica com ênfase em atuação humana e contexto emocional
-            if acting_prompt:
-                prompt_completo = (
-                    f"Você é um ator interpretando uma fala para um audiolivro profissional em português do Brasil.\n"
-                    f"Direção cênica, tom de voz e respiração: {acting_prompt}\n"
-                    f"Interprete com máxima naturalidade humana a seguinte fala: \"{text}\""
-                )
-            else:
-                prompt_completo = f"Leia com voz expressiva e natural de audiolivro: \"{text}\""
-
-            # Voz padrão caso venha com prefixo
-            nome_limpo = voice_name.replace("gemini_", "").capitalize()
-            if nome_limpo not in ("Puck", "Charon", "Kore", "Fenrir", "Aoede", "Zephyr", "Leda", "Orus"):
-                nome_limpo = "Puck"
-
-            tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-lite-tts")
+        async with self.gemini_semaphore:
+            # Pausa suave de 1s para respeitar limites de taxa por minuto da Google Developer API
+            await asyncio.sleep(1.0)
             try:
-                response = client.models.generate_content(
-                    model=tts_model,
-                    contents=prompt_completo,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["AUDIO"],
-                        speech_config=types.SpeechConfig(
-                            voice_config=types.VoiceConfig(
-                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                    voice_name=nome_limpo
-                                )
-                            )
-                        ),
-                    ),
-                )
-            except Exception as e_tts:
-                print(f"[Synthesizer] Modelo {tts_model} falhou ({e_tts}). Tentando fallback gemini-2.5-flash-preview-tts...")
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash-preview-tts",
-                    contents=prompt_completo,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["AUDIO"],
-                        speech_config=types.SpeechConfig(
-                            voice_config=types.VoiceConfig(
-                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                    voice_name=nome_limpo
-                                )
-                            )
-                        ),
-                    ),
-                )
+                from google import genai
+                from google.genai import types
 
-            # Extrai os bytes de áudio retornados pelo modelo
-            for part in response.candidates[0].content.parts:
-                if part.inline_data and part.inline_data.data:
-                    with open(output_path, "wb") as f:
-                        f.write(part.inline_data.data)
-                    return True
+                client = genai.Client(api_key=self.gemini_api_key)
 
-            return False
-        except Exception as e:
-            print(f"[Synthesizer] Aviso: Gemini TTS indisponível ({e}). Acionando Fallback...")
-            return False
+                # Prepara a instrução cênica com ênfase em atuação humana e contexto emocional
+                if acting_prompt:
+                    prompt_completo = (
+                        f"Você é um ator interpretando uma fala para um audiolivro profissional em português do Brasil.\n"
+                        f"Direção cênica, tom de voz e respiração: {acting_prompt}\n"
+                        f"Interprete com máxima naturalidade humana a seguinte fala: \"{text}\""
+                    )
+                else:
+                    prompt_completo = f"Leia com voz expressiva e natural de audiolivro: \"{text}\""
+
+                # Voz padrão caso venha com prefixo
+                nome_limpo = voice_name.replace("gemini_", "").capitalize()
+                if nome_limpo not in ("Puck", "Charon", "Kore", "Fenrir", "Aoede", "Zephyr", "Leda", "Orus"):
+                    nome_limpo = "Puck"
+
+                tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-lite-tts")
+                response = None
+                try:
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=tts_model,
+                        contents=prompt_completo,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["AUDIO"],
+                            speech_config=types.SpeechConfig(
+                                voice_config=types.VoiceConfig(
+                                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                        voice_name=nome_limpo
+                                    )
+                                )
+                            ),
+                        ),
+                    )
+                except Exception as e_tts:
+                    err_s = str(e_tts)
+                    print(f"[Synthesizer] Modelo {tts_model} falhou ({err_s}). Tentando fallback gemini-2.5-flash-preview-tts...")
+                    try:
+                        response = await asyncio.to_thread(
+                            client.models.generate_content,
+                            model="gemini-2.5-flash-preview-tts",
+                            contents=prompt_completo,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["AUDIO"],
+                                speech_config=types.SpeechConfig(
+                                    voice_config=types.VoiceConfig(
+                                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                            voice_name=nome_limpo
+                                        )
+                                    )
+                                ),
+                            ),
+                        )
+                    except Exception as e_tts2:
+                        err2_s = str(e_tts2)
+                        print(f"[Synthesizer] Aviso: Gemini TTS indisponível ({err2_s}). Acionando Fallback...")
+                        if "429" in err2_s or "RESOURCE_EXHAUSTED" in err2_s or "quota" in err2_s.lower():
+                            return False, "Cota diária da API do Gemini excedida (Free Tier)."
+                        return False, f"Gemini indisponível: {err2_s}"
+
+                # Extrai os bytes de áudio retornados pelo modelo
+                if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.inline_data and part.inline_data.data:
+                            with open(output_path, "wb") as f:
+                                f.write(part.inline_data.data)
+                            return True, None
+
+                return False, "Nenhum dado de áudio retornado pelo Gemini."
+            except Exception as e:
+                err_main = str(e)
+                print(f"[Synthesizer] Aviso: Gemini TTS indisponível ({err_main}). Acionando Fallback...")
+                if "429" in err_main or "RESOURCE_EXHAUSTED" in err_main or "quota" in err_main.lower():
+                    return False, "Cota diária da API do Gemini excedida (Free Tier)."
+                return False, f"Erro Gemini: {err_main}"
 
     async def synthesize_with_kokoro(
         self,
@@ -246,7 +265,7 @@ class Synthesizer:
 
             # 1. Tenta sintetizar pelo motor primário
             if block.engine == "gemini":
-                sucesso = await self.synthesize_with_gemini(
+                sucesso, reason = await self.synthesize_with_gemini(
                     text=texto_a_sintetizar,
                     voice_name=block.voice_id,
                     acting_prompt=block.acting_prompt,
@@ -256,9 +275,10 @@ class Synthesizer:
                     block.actual_engine = "gemini"
                     block.actual_voice_id = block.voice_id
                     block.fallback_triggered = False
+                    block.fallback_reason = None
                 else:
                     block.fallback_triggered = True
-                    block.fallback_reason = "Gemini indisponível ou limite de cota"
+                    block.fallback_reason = reason or "Gemini indisponível ou limite de cota"
             elif block.engine == "kokoro":
                 sucesso = await self.synthesize_with_kokoro(
                     text=texto_a_sintetizar,
@@ -270,6 +290,7 @@ class Synthesizer:
                     block.actual_engine = "kokoro"
                     block.actual_voice_id = block.voice_id
                     block.fallback_triggered = False
+                    block.fallback_reason = None
                 else:
                     block.fallback_triggered = True
                     block.fallback_reason = "Kokoro local indisponível"
@@ -309,7 +330,7 @@ class Synthesizer:
         script: ChapterScript,
         project_slug: str,
         temp_dir: Optional[Path] = None,
-        on_progress: Optional[Callable[[int, int], None]] = None,
+        on_progress: Optional[Callable] = None,
     ) -> List[Path]:
         """Sintetiza todas as falas do capítulo de forma concorrente e ordenada."""
         base_temp = temp_dir or (Path("data") / "projects" / project_slug / "temp" / f"cap_{script.chapter_number:02d}")
@@ -328,7 +349,10 @@ class Synthesizer:
             async def _executar_com_progresso(b=block, p=bloco_path, idx=i):
                 await self.synthesize_block(b, p)
                 if on_progress:
-                    on_progress(idx + 1, total_blocos)
+                    try:
+                        on_progress(idx + 1, total_blocos, b.text)
+                    except TypeError:
+                        on_progress(idx + 1, total_blocos)
 
             tasks.append(_executar_com_progresso())
 

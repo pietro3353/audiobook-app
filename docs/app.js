@@ -324,6 +324,7 @@ async function runDirector() {
 
   const mode = document.querySelector('input[name="directorMode"]:checked').value;
   const forceExpress = mode === "express";
+  const fuseSpeeches = document.getElementById("checkFuseSpeeches") ? document.getElementById("checkFuseSpeeches").checked : true;
 
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/direct`, {
@@ -334,6 +335,8 @@ async function runDirector() {
         chapter_title: "Capítulo 01",
         chapter_content: text,
         force_express: forceExpress,
+        fuse_speeches: fuseSpeeches,
+        max_chars_per_speech: 1200,
       }),
     });
 
@@ -527,17 +530,14 @@ async function startRender(quickTest = false) {
   const progressPct = document.getElementById("progressPctText");
 
   progressWrapper.classList.remove("hidden");
-  progressFill.style.width = "10%";
-  progressText.textContent = quickTest ? "Renderizando 3 primeiras falas..." : "Iniciando síntese concorrente...";
-  progressPct.textContent = "10%";
+  progressFill.style.width = "5%";
+  progressText.textContent = quickTest ? "Iniciando teste rápido de 3 falas..." : "Iniciando renderização em segundo plano...";
+  progressPct.textContent = "5%";
 
   const kokoroEq = document.getElementById("checkKokoroEq").checked;
   const roomTone = document.getElementById("checkRoomTone").checked;
 
   try {
-    progressFill.style.width = "40%";
-    progressPct.textContent = "40%";
-
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -546,30 +546,79 @@ async function startRender(quickTest = false) {
         quick_test: quickTest,
         enable_kokoro_eq: kokoroEq,
         enable_room_tone: roomTone,
+        async_mode: true,
       }),
     });
 
-    if (res.ok) {
-      const data = await res.json();
-      progressFill.style.width = "100%";
-      progressPct.textContent = "100%";
-      progressText.textContent = "🎉 Masterização concluída com sucesso!";
-
-      // Atualiza o player de áudio do rodapé
-      setupAudioPlayer(data);
-
-      // Renderiza a lista de auditoria
-      renderAuditList(data.audit || []);
-    } else {
+    if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      const errMsg = err.detail || res.statusText || "Erro durante a síntese de áudio.";
+      const errMsg = err.detail || res.statusText || "Erro ao iniciar a renderização.";
       progressText.textContent = `❌ ${errMsg}`;
       alert(`⚠️ Erro na Renderização: ${errMsg}`);
+      btnQuick.disabled = false;
+      btnFull.disabled = false;
+      state.isRendering = false;
+      return;
     }
+
+    const initData = await res.json();
+    const totalBlocks = initData.total_blocks || 1;
+
+    // Polling a cada 1 segundo para acompanhar o status sem timeout HTTP
+    const pollTimer = setInterval(async () => {
+      try {
+        const statusRes = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/render/status`);
+        if (!statusRes.ok) return;
+        const job = await statusRes.json();
+
+        if (job.status === "running") {
+          const pct = Math.max(5, job.percent || Math.round((job.current_block / (job.total_blocks || totalBlocks)) * 90));
+          progressFill.style.width = `${pct}%`;
+          progressPct.textContent = `${pct}%`;
+          let txt = `🎙️ Sintetizando fala ${job.current_block} de ${job.total_blocks || totalBlocks}...`;
+          if (job.current_text) {
+            txt += ` ("${job.current_text}...")`;
+          }
+          if (job.quota_exceeded) {
+            txt += ` ⚠️ (Cota Gemini atingida: gravando com voz reserva)`;
+          }
+          progressText.textContent = txt;
+        } else if (job.status === "completed") {
+          clearInterval(pollTimer);
+          progressFill.style.width = "100%";
+          progressPct.textContent = "100%";
+
+          if (job.quota_exceeded) {
+            progressText.textContent = "⚠️ Concluído! Cota diária do Gemini atingida (voz reserva ativada nas falas restantes).";
+            alert("⚠️ Atenção à Cota do Google:\nSua cota gratuita diária do Gemini TTS (10 requisições/dia) foi atingida.\nAs falas restantes foram gravadas automaticamente na voz de contingência (Edge-TTS) para não perder o áudio.");
+          } else {
+            progressText.textContent = "🎉 Masterização concluída com sucesso!";
+          }
+
+          if (job.result) {
+            setupAudioPlayer(job.result);
+            renderAuditList(job.result.audit || []);
+          }
+
+          btnQuick.disabled = false;
+          btnFull.disabled = false;
+          state.isRendering = false;
+        } else if (job.status === "error") {
+          clearInterval(pollTimer);
+          progressText.textContent = `❌ ${job.error || "Erro durante a síntese."}`;
+          alert(`⚠️ Erro na Renderização: ${job.error || "Erro desconhecido"}`);
+          btnQuick.disabled = false;
+          btnFull.disabled = false;
+          state.isRendering = false;
+        }
+      } catch (errPoll) {
+        console.error("Erro no polling de status:", errPoll);
+      }
+    }, 1000);
+
   } catch (e) {
     progressText.textContent = `❌ Falha de conexão: ${e.message || e}`;
     alert(`Falha de conexão durante a renderização: ${e.message || e}`);
-  } finally {
     btnQuick.disabled = false;
     btnFull.disabled = false;
     state.isRendering = false;

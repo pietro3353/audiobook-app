@@ -13,6 +13,7 @@ Expõe endpoints REST para:
 import asyncio
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -91,6 +92,8 @@ class DirectChapterRequest(BaseModel):
     chapter_title: str = "Capítulo 01"
     chapter_content: str
     force_express: bool = False
+    fuse_speeches: bool = True
+    max_chars_per_speech: int = 1200
 
 
 class RenderChapterRequest(BaseModel):
@@ -98,6 +101,7 @@ class RenderChapterRequest(BaseModel):
     quick_test: bool = False  # True = 3 primeiras falas
     enable_kokoro_eq: bool = True
     enable_room_tone: bool = True
+    async_mode: bool = False  # True = processa em background com polling de status
 
 
 class VoicePreviewRequest(BaseModel):
@@ -439,6 +443,8 @@ def direct_scene(slug: str, req: DirectChapterRequest):
             chapter_title=req.chapter_title,
             chapter_content=req.chapter_content,
             force_express=req.force_express,
+            fuse_speeches=req.fuse_speeches,
+            max_chars_per_speech=req.max_chars_per_speech,
         )
         # Remove áudios renderizados antigos deste capítulo para não tocar áudio de texto anterior
         out_cap = pm.get_project_dir(slug) / "output" / f"cap_{req.chapter_number:02d}.mp3"
@@ -464,11 +470,103 @@ def direct_scene(slug: str, req: DirectChapterRequest):
 # 6. ROTAS DE RENDERIZAÇÃO & AUDITORIA DE MOTORES
 # ==============================================================================
 
+RENDER_JOBS: Dict[str, dict] = {}
+
+
+async def _run_render_job(
+    slug: str,
+    req: RenderChapterRequest,
+    subscript: ChapterScript,
+    script_original: ChapterScript,
+    saida_final: Path,
+):
+    """Executa a síntese e masterização de áudio em segundo plano com atualização contínua de status."""
+    try:
+        synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
+        temp_dir = pm.get_project_dir(slug) / "temp" / f"cap_{subscript.chapter_number:02d}"
+
+        def on_progress(idx, total, text=""):
+            pct = int((idx / max(total, 1)) * 90)
+            if slug in RENDER_JOBS:
+                RENDER_JOBS[slug]["current_block"] = idx
+                RENDER_JOBS[slug]["percent"] = pct
+                RENDER_JOBS[slug]["current_text"] = text[:60] if text else ""
+
+        chunks_brutos = await synth.synthesize_chapter(
+            script=subscript,
+            project_slug=slug,
+            temp_dir=temp_dir,
+            on_progress=on_progress,
+        )
+
+        if slug in RENDER_JOBS:
+            RENDER_JOBS[slug]["percent"] = 92
+            RENDER_JOBS[slug]["current_text"] = "Masterizando áudio no estúdio (FFmpeg)..."
+
+        mixer.mix_chapter(
+            script=subscript,
+            raw_chunks=chunks_brutos,
+            output_chapter_mp3=saida_final,
+            enable_kokoro_eq=req.enable_kokoro_eq,
+            enable_room_tone=req.enable_room_tone,
+        )
+
+        pm.save_chapter_script(slug, script_original)
+
+        auditoria = []
+        cota_estourada = False
+        for b in subscript.blocks:
+            if b.fallback_triggered and b.fallback_reason and ("Cota" in b.fallback_reason or "excedida" in b.fallback_reason):
+                cota_estourada = True
+            auditoria.append({
+                "index": b.index,
+                "character_id": b.character_id,
+                "actual_engine": b.actual_engine or b.engine,
+                "actual_voice_id": b.actual_voice_id or b.voice_id,
+                "fallback_triggered": b.fallback_triggered,
+                "fallback_reason": b.fallback_reason,
+                "text": b.text,
+            })
+
+        tamanho_kb = round(saida_final.stat().st_size / 1024, 1)
+
+        result_payload = {
+            "success": True,
+            "has_audio": True,
+            "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
+            "filename": saida_final.name,
+            "size_kb": tamanho_kb,
+            "blocks_count": len(subscript.blocks),
+            "audit": auditoria,
+            "quota_exceeded": cota_estourada,
+        }
+
+        if slug in RENDER_JOBS:
+            RENDER_JOBS[slug]["status"] = "completed"
+            RENDER_JOBS[slug]["percent"] = 100
+            RENDER_JOBS[slug]["quota_exceeded"] = cota_estourada
+            RENDER_JOBS[slug]["result"] = result_payload
+    except Exception as e:
+        if slug in RENDER_JOBS:
+            RENDER_JOBS[slug]["status"] = "error"
+            RENDER_JOBS[slug]["error"] = str(e)
+
+
+@app.get("/api/projects/{slug}/render/status")
+def get_render_status(slug: str):
+    """Retorna o status em tempo real do processamento de renderização."""
+    job = RENDER_JOBS.get(slug)
+    if not job:
+        return {"status": "idle"}
+    return job
+
+
 @app.post("/api/projects/{slug}/render")
 async def render_audio(slug: str, req: RenderChapterRequest):
     """
     Renderiza o capítulo (Completo ou Teste Rápido de 3 Falas) com transparência
     total de qual motor gerou cada fala e masterização de estúdio.
+    Suporta processamento em segundo plano (async_mode) para evitar timeout HTTP no navegador.
     """
     try:
         script_original = pm.load_chapter_script(slug, req.chapter_number)
@@ -494,6 +592,35 @@ async def render_audio(slug: str, req: RenderChapterRequest):
                 b.fallback_voice_id = char.fallback_voice_id
                 b.fallback_engine = char.fallback_engine
 
+        nome_saida = "demo_teste_3_falas.mp3" if req.quick_test else f"cap_{req.chapter_number:02d}.mp3"
+        saida_final = pm.get_project_dir(slug) / "output" / nome_saida
+
+        # Se solicitado em modo assíncrono (Web Studio), dispara a tarefa em segundo plano
+        if req.async_mode:
+            job_id = f"job_{slug}_{int(time.time())}"
+            RENDER_JOBS[slug] = {
+                "job_id": job_id,
+                "slug": slug,
+                "status": "running",
+                "current_block": 0,
+                "total_blocks": len(subscript.blocks),
+                "percent": 0,
+                "current_text": "Iniciando sintetizador...",
+                "quota_exceeded": False,
+                "error": None,
+                "result": None,
+            }
+            asyncio.create_task(
+                _run_render_job(slug, req, subscript, script_original, saida_final)
+            )
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": "running",
+                "total_blocks": len(subscript.blocks),
+            }
+
+        # Modo síncrono padrão (compatibilidade com suites de teste e scripts CLI)
         synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
         temp_dir = pm.get_project_dir(slug) / "temp" / f"cap_{subscript.chapter_number:02d}"
 
@@ -505,9 +632,6 @@ async def render_audio(slug: str, req: RenderChapterRequest):
         )
 
         # 2. Masterização acústica
-        nome_saida = "demo_teste_3_falas.mp3" if req.quick_test else f"cap_{req.chapter_number:02d}.mp3"
-        saida_final = pm.get_project_dir(slug) / "output" / nome_saida
-
         mixer.mix_chapter(
             script=subscript,
             raw_chunks=chunks_brutos,
@@ -536,6 +660,7 @@ async def render_audio(slug: str, req: RenderChapterRequest):
 
         return {
             "success": True,
+            "has_audio": True,
             "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
             "filename": saida_final.name,
             "size_kb": tamanho_kb,
