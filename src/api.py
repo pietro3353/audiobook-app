@@ -473,6 +473,18 @@ def direct_scene(slug: str, req: DirectChapterRequest):
 RENDER_JOBS: Dict[str, dict] = {}
 
 
+def _sync_audit_blocks(subscript: ChapterScript, script_original: ChapterScript) -> None:
+    """Sincroniza os atributos de auditoria e contingência de volta para o script persistido."""
+    sub_map = {b.index: b for b in subscript.blocks}
+    for orig_b in script_original.blocks:
+        if orig_b.index in sub_map:
+            sb = sub_map[orig_b.index]
+            orig_b.actual_engine = sb.actual_engine
+            orig_b.actual_voice_id = sb.actual_voice_id
+            orig_b.fallback_triggered = sb.fallback_triggered
+            orig_b.fallback_reason = sb.fallback_reason
+
+
 async def _run_render_job(
     slug: str,
     req: RenderChapterRequest,
@@ -511,6 +523,8 @@ async def _run_render_job(
             enable_room_tone=req.enable_room_tone,
         )
 
+        # Sincroniza atributos de auditoria de volta para o script persistido
+        _sync_audit_blocks(subscript, script_original)
         pm.save_chapter_script(slug, script_original)
 
         auditoria = []
@@ -641,6 +655,7 @@ async def render_audio(slug: str, req: RenderChapterRequest):
         )
 
         # Atualiza o script persistido com os campos de auditoria
+        _sync_audit_blocks(subscript, script_original)
         pm.save_chapter_script(slug, script_original)
 
         # Coleta dados de auditoria

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20261008_2">
+  <link rel="stylesheet" href="styles.css?v=6.5">
 </head>
 <body class="dark-theme">
   <!-- CABEÇALHO SUPERIOR -->
@@ -77,10 +77,10 @@
               </div>
             </div>
 
-            <div id="pdfControls" class="pdf-controls hidden">
+            <div id="pdfControls" class="pdf-controls">
               <div class="scope-header flex-between mb-2">
-                <div class="badge badge-info" id="pdfPageBadge">📚 Arquivo Detectado</div>
-                <span id="fileTypeHint" style="font-size: 0.75rem; color: var(--text-muted)"></span>
+                <div class="badge badge-info" id="pdfPageBadge">📚 Escopo do Documento</div>
+                <span id="fileTypeHint" style="font-size: 0.75rem; color: var(--text-muted)">Selecione um arquivo acima</span>
               </div>
 
               <!-- Controles de Páginas (visível para PDFs) -->
@@ -103,7 +103,7 @@
                 </label>
                 <div id="limitParagsWrapper" class="hidden" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
                   <label for="maxParagsInput" style="font-size: 0.8rem; color: var(--text-secondary);">Limitar aos primeiros:</label>
-                  <input type="number" id="maxParagsInput" min="1" max="500" value="15" class="styled-input" style="width: 80px;">
+                  <input type="number" id="maxParagsInput" min="1" max="5000" value="50" class="styled-input" style="width: 80px;">
                   <span style="font-size: 0.8rem; color: var(--text-muted);">parágrafos</span>
                 </div>
               </div>
@@ -325,6 +325,6 @@
   <!-- AUDIO ELEMENT PARA PREVIEW DE VOZ DE 2S -->
   <audio id="previewAudioElement" class="hidden"></audio>
 
-  <script src="app.js?v=20261008_2"></script>
+  <script src="app.js?v=6.5"></script>
 </body>
 </html>

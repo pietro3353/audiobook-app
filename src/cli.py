@@ -194,19 +194,17 @@ def cmd_cast(args):
     # Troca de voz manual se solicitado
     if args.set_voice:
         char_id, nova_voz = args.set_voice
-        char = bible.get(char_id)
-        if not char:
-            print(f"[Erro] Personagem '{char_id}' não encontrado na Bíblia.")
-            sys.exit(1)
         voz_profile = get_voice_by_id(nova_voz)
         if not voz_profile:
             print(f"[Erro] Voz '{nova_voz}' não existe no catálogo de vozes.")
             sys.exit(1)
-
-        char.voice_id = voz_profile.id
-        char.engine = voz_profile.engine
-        pm.save_character_bible(bible)
-        print(f"✔ Voz do personagem '{char.name}' atualizada para '{voz_profile.name}' ({voz_profile.id})!\n")
+        try:
+            char = pm.update_character_voice(slug, char_id, nova_voz)
+            bible = pm.load_character_bible(slug)
+            print(f"✔ Voz do personagem '{char.name}' atualizada para '{voz_profile.name}' ({voz_profile.id}) e propagada aos roteiros!\n")
+        except KeyError as e:
+            print(f"[Erro] {e}")
+            sys.exit(1)
 
     print(f"\n=======================================================")
     print(f"BÍBLIA DE PERSONAGENS: {slug}")

@@ -149,6 +149,7 @@ def validate_lexical_fidelity(
 def fuse_consecutive_speeches(
     blocks: List[SpeechBlock],
     max_chars: int = 1200,
+    allow_cross_speech_type: bool = False,
 ) -> List[SpeechBlock]:
     """
     Funde falas consecutivas do mesmo personagem e mesmo motor quando são do tipo narração,
@@ -167,26 +168,28 @@ def fuse_consecutive_speeches(
             curr = b.model_copy()
             continue
 
-        # Condições para permitir fusão:
-        # 1. Mesmo personagem
-        # 2. Mesmo motor e mesma voz principal
-        # 3. Mesmo tipo de fala (não funde diálogo com narração)
-        # 4. Apenas tipos narrativos/expositivos (narracao, citacao, destaque)
-        # 5. Tamanho combinado não excede max_chars
+        mesmo_tipo = curr.speech_type == b.speech_type
+        tipo_compativel = mesmo_tipo or (
+            allow_cross_speech_type
+            and curr.speech_type in ("narracao", "citacao", "destaque")
+            and b.speech_type in ("narracao", "citacao", "destaque")
+        )
+
         pode_fundir = (
             curr.character_id == b.character_id
             and curr.voice_id == b.voice_id
             and curr.engine == b.engine
-            and curr.speech_type == b.speech_type
+            and tipo_compativel
             and curr.speech_type in ("narracao", "citacao", "destaque")
             and (len(curr.text) + len(b.text) + 1 <= max_chars)
         )
 
         if pode_fundir:
-            curr.text = f"{curr.text} {b.text}"
+            # Resolve t1 e t2 ANTES de alterar curr.text para não duplicar conteúdo
             t1 = curr.text_for_tts or curr.text
             t2 = b.text_for_tts or b.text
-            curr.text_for_tts = f"{t1} ... {t2}"
+            curr.text = f"{curr.text} {b.text}"
+            curr.text_for_tts = f"{t1} {t2}"
             curr.pause_after_ms = b.pause_after_ms
             if b.emotion != "neutro" and curr.emotion == "neutro":
                 curr.emotion = b.emotion
@@ -243,6 +246,7 @@ REGRA DE OURO DE INTEGRIDADE (CRÍTICA):
 - NÃO RESUMA, NÃO CORTE e NÃO OMITA nenhuma frase ou palavra do texto original.
 - Cada oração de narração, diálogo ou descrição do texto deve estar presente no campo 'text' de alguma fala.
 - Você PODE e DEVE ajustar a pontuação para interpretação dramática (ex: transformar vírgula em reticências '...' para pausas respiratórias, usar '!' para ênfases), mas preservando as palavras originais.
+- PROIBIDO incluir instruções cênicas, nomes de emoções ou notas entre colchetes/parênteses dentro de 'text' ou 'text_for_tts'. Esses campos devem conter apenas as palavras exatas a serem pronunciadas.
 
 MODO DO PROJETO: {project_metadata.mode.upper()}
 RESUMO DO CONTEXTO ATÉ O MOMENTO:
@@ -343,11 +347,13 @@ class Director:
 
             # Chamada compatível com a Gemini Developer API com resiliência a 503 e sobrecarga
             schema = get_cleaned_director_schema()
-            candidatos = [
-                os.getenv("GEMINI_DIRECTOR_MODEL", "gemini-3.5-flash-lite"),
-                "gemini-2.5-flash-lite",
-                "gemini-2.5-flash",
-            ]
+            default_mod = "gemini-2.5-flash-lite"
+            env_mod = os.getenv("GEMINI_DIRECTOR_MODEL", default_mod).strip() or default_mod
+            candidatos = [env_mod]
+            for m in ("gemini-2.5-flash-lite", "gemini-2.5-flash"):
+                if m not in candidatos:
+                    candidatos.append(m)
+
             response = None
             ultimo_erro = None
 
@@ -365,7 +371,14 @@ class Director:
                     if response and response.text:
                         break
                 except Exception as e_schema:
-                    print(f"[Director] Modelo {mod} com schema falhou ({e_schema}). Tentando formato JSON via prompt...")
+                    err_s = str(e_schema)
+                    ultimo_erro = e_schema
+                    # Se for 404 / NOT_FOUND, o modelo não existe no endpoint; pula imediatamente sem retentar sem schema
+                    if "404" in err_s or "not_found" in err_s.lower() or "not found" in err_s.lower():
+                        print(f"[Director] Modelo {mod} indisponível (404). Pulando para o próximo...")
+                        continue
+
+                    print(f"[Director] Modelo {mod} com schema falhou ({err_s[:120]}). Tentando formato JSON via prompt...")
                     try:
                         response = client.models.generate_content(
                             model=mod,
@@ -379,7 +392,7 @@ class Director:
                             break
                     except Exception as e_pure:
                         ultimo_erro = e_pure
-                        print(f"[Director] Modelo {mod} falhou ({e_pure}). Tentando próximo candidato...")
+                        print(f"[Director] Modelo {mod} falhou ({str(e_pure)[:120]}). Tentando próximo candidato...")
 
             if not response or not response.text:
                 raise RuntimeError(f"Não foi possível obter resposta do Gemini em nenhum modelo: {ultimo_erro}")
@@ -490,6 +503,16 @@ class Director:
         blocos_totais: List[SpeechBlock] = []
         bloco_index_global = 0
 
+        metadata = self.pm.load_metadata(project_slug) or ProjectMetadata(
+            slug=project_slug, title=project_slug
+        )
+        is_single_voice_mode = metadata.mode in ("summary", "non_fiction")
+        bible = self.pm.load_character_bible(project_slug)
+        narrador_padrao = bible.characters.get("narrador")
+        if not narrador_padrao:
+            narrador_padrao = self.pm.smart_cast(project_slug, "Narrador", gender="M")
+
+        resumos_cenas: List[str] = []
         usar_express = force_express or not self.is_gemini_available()
 
         for chunk_data in chunks:
@@ -510,8 +533,11 @@ class Director:
                     previous_speeches=ultimas_falas,
                 )
 
-                # Atualiza metadados com aliases detectados
-                if resposta_llm.detected_aliases:
+                if resposta_llm.scene_summary:
+                    resumos_cenas.append(resposta_llm.scene_summary.strip())
+
+                # Atualiza metadados com aliases detectados (apenas se ficção)
+                if resposta_llm.detected_aliases and not is_single_voice_mode:
                     bible = self.pm.load_character_bible(project_slug)
                     for alias, canonico in resposta_llm.detected_aliases.items():
                         char = bible.resolve_alias(canonico)
@@ -521,15 +547,18 @@ class Director:
 
                 blocos_chunk = []
                 for sp in resposta_llm.speeches:
-                    # Resolve ou cadastra personagem
-                    char = self.pm.smart_cast(
-                        project_slug=project_slug,
-                        name=sp.speaker,
-                        gender=sp.character_gender,
-                        apparent_age=sp.character_apparent_age,
-                        accent=sp.character_accent,
-                        personality=sp.character_personality,
-                    )
+                    # Em aulas e resumos, trava estritamente no narrador único do projeto
+                    if is_single_voice_mode:
+                        char = narrador_padrao
+                    else:
+                        char = self.pm.smart_cast(
+                            project_slug=project_slug,
+                            name=sp.speaker,
+                            gender=sp.character_gender,
+                            apparent_age=sp.character_apparent_age,
+                            accent=sp.character_accent,
+                            personality=sp.character_personality,
+                        )
 
                     bloco = self.pm.create_speech_block(
                         character=char,
@@ -549,8 +578,17 @@ class Director:
         # Fusão Inteligente de Parágrafos (reduz 80-90% das requisições e preserva fluidez)
         if fuse_speeches:
             blocos_totais = fuse_consecutive_speeches(
-                blocos_totais, max_chars=max_chars_per_speech
+                blocos_totais,
+                max_chars=max_chars_per_speech,
+                allow_cross_speech_type=is_single_voice_mode,
             )
+
+        # Atualiza memória contínua do projeto com o resumo das cenas
+        if resumos_cenas:
+            novo_resumo = " ".join(resumos_cenas).strip()
+            if novo_resumo:
+                metadata.context_summary = novo_resumo
+                self.pm.save_metadata(metadata)
 
         # Monta e persiste o ChapterScript
         total_chars = sum(len(b.text) for b in blocos_totais)

@@ -57,47 +57,67 @@ def cure_text(raw_text: str) -> str:
         linhas_curadas.append(l_strip)
 
     # 3. Reconstrução de Parágrafos:
-    # Em PDFs, cada linha visual tem \n. Se a linha não terminar com pontuação forte
-    # (., !, ?, :, ", ”, —) e a próxima linha não iniciar com travessão de diálogo,
-    # as duas linhas devem ser concatenadas com um espaço.
+    # Em PDFs, linhas são quebradas visualmente. Reconstruímos parágrafos reais,
+    # identificando pontuações terminais, itens de lista e títulos/tópicos isolados.
     paragrafos: List[str] = []
     buffer_paragrafo: List[str] = []
 
     pontuacao_terminal = (".", "!", "?", ":", "…", "—", '"', "”", "'")
+    continuacao_obvia = (",", ";", "-", "–", "—", "/", "(", "[")
+    re_list_item = re.compile(r"^([•*▪▫]|[-–—]\s|\d+(\.\d+)*[.)]?\s|[a-zA-Z][.)]\s)")
+
+    def _flush_buffer(buffer: List[str]) -> None:
+        if not buffer:
+            return
+        p = " ".join(buffer).strip()
+        if p:
+            if not any(p.endswith(term) for term in pontuacao_terminal):
+                p += "."
+            paragrafos.append(p)
+        buffer.clear()
 
     for linha in linhas_curadas:
         if not linha:
-            # Linha em branco sinaliza fim de parágrafo
-            if buffer_paragrafo:
-                paragrafos.append(" ".join(buffer_paragrafo).strip())
-                buffer_paragrafo = []
+            _flush_buffer(buffer_paragrafo)
             continue
 
-        # Início de fala com travessão em parágrafo novo
         eh_inicio_dialogo = linha.startswith(("-", "—", "–"))
-
-        if eh_inicio_dialogo and buffer_paragrafo:
-            # Conclui o parágrafo anterior antes de abrir diálogo
-            paragrafos.append(" ".join(buffer_paragrafo).strip())
-            buffer_paragrafo = [linha]
-            continue
+        eh_inicio_lista = bool(re_list_item.match(linha))
 
         if not buffer_paragrafo:
             buffer_paragrafo.append(linha)
+            continue
+
+        linha_anterior = buffer_paragrafo[-1]
+        termina_com_pontuacao = any(linha_anterior.endswith(p) for p in pontuacao_terminal)
+
+        # Se a nova linha for diálogo ou item de lista, fecha o parágrafo anterior
+        if eh_inicio_dialogo or eh_inicio_lista:
+            _flush_buffer(buffer_paragrafo)
+            buffer_paragrafo.append(linha)
+            continue
+
+        # Se a linha anterior já encerrava com pontuação forte, inicia novo parágrafo
+        if termina_com_pontuacao:
+            _flush_buffer(buffer_paragrafo)
+            buffer_paragrafo.append(linha)
+            continue
+
+        # Heurística de Título/Tópico curto isolado (< 70 chars sem pontuação forte,
+        # seguido de linha que inicia com maiúscula ou lista)
+        parece_titulo = (
+            len(linha_anterior) < 70
+            and not any(linha_anterior.endswith(c) for c in continuacao_obvia)
+            and (linha[0].isupper() or eh_inicio_lista)
+        )
+
+        if parece_titulo:
+            _flush_buffer(buffer_paragrafo)
+            buffer_paragrafo.append(linha)
         else:
-            linha_anterior = buffer_paragrafo[-1]
-            termina_com_pontuacao = any(linha_anterior.endswith(p) for p in pontuacao_terminal)
+            buffer_paragrafo.append(linha)
 
-            if termina_com_pontuacao:
-                # O parágrafo anterior terminou de fato
-                paragrafos.append(" ".join(buffer_paragrafo).strip())
-                buffer_paragrafo = [linha]
-            else:
-                # Linha quebrada no meio da frase: une à frase atual
-                buffer_paragrafo.append(linha)
-
-    if buffer_paragrafo:
-        paragrafos.append(" ".join(buffer_paragrafo).strip())
+    _flush_buffer(buffer_paragrafo)
 
     # 4. Limpeza de múltiplos espaços internos
     paragrafos_finais = [

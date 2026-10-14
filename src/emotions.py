@@ -17,7 +17,7 @@ class EmotionProfile:
     pitch_delta: int  # Hz de deslocamento (ex: +3 para +3Hz, -4 para -4Hz)
     volume_delta: int  # Pontos percentuais de volume
     pause_multiplier: float  # Multiplicador do tempo de respiração padrão
-    acting_instruction: str  # Instrução em linguagem natural para o Gemini
+    acting_instruction: str  # Descrição cênica (apenas informativa/UI; nunca enviada como texto ao TTS)
 
 
 # ==============================================================================
@@ -161,6 +161,39 @@ EMOTION_MATRIX: Dict[str, EmotionProfile] = {
 }
 
 
+# ==============================================================================
+# PREFIXOS CURTOS DE ESTILO PARA O GEMINI TTS
+# Regra: no máximo 3 palavras, sem ponto final, sempre seguidos de ':' + texto.
+# Emoções neutras/didáticas NÃO recebem prefixo → texto puro → timbre 100% estável.
+# ==============================================================================
+GEMINI_TTS_PREFIXES: Dict[str, str] = {
+    "sussurro": "Say in whisper",
+    "tenso": "Say tensely",
+    "panico": "Say panicked",
+    "raiva": "Say angrily",
+    "tristeza": "Say sadly",
+    "alegria": "Say cheerfully",
+    "ironia_sarcasmo": "Say sarcastically",
+    "cansado_fraco": "Say wearily",
+    "pensamento": "Say softly",
+    "misterio": "Say mysteriously",
+    "animado": "Say excitedly",
+    "autoritario": "Say firmly",
+}
+
+NEUTRAL_EMOTIONS = {"neutro", "destaque_didatico", "solene"}
+
+
+def get_tts_style_prefix(emotion_label: Optional[str]) -> str:
+    """Retorna o prefixo curto de estilo do Gemini TTS ou '' para emoções neutras/didáticas."""
+    if not emotion_label:
+        return ""
+    label = emotion_label.strip().lower()
+    if label in NEUTRAL_EMOTIONS:
+        return ""
+    return GEMINI_TTS_PREFIXES.get(label, "")
+
+
 
 # ==============================================================================
 # CÁLCULO ACÚSTICO COM CLAMPING E ATUAÇÃO
@@ -216,12 +249,10 @@ def calculate_acoustic_parameters(
     pitch_str = f"{final_pitch:+d}Hz"
     volume_str = f"{final_volume:+d}%"
 
-    # 4. Geração do Prompt de Atuação Cênica para motores multimodais
+    # 4. Descrição cênica informativa (exibida na UI/auditoria; NUNCA enviada como texto ao TTS)
     prompt_elementos = [emotion.acting_instruction]
     if character_personality:
-        prompt_elementos.append(
-            f"Mantenha a personalidade base do personagem: {character_personality}."
-        )
+        prompt_elementos.append(f"Personagem: {character_personality}")
 
     acting_prompt = " ".join(prompt_elementos)
 

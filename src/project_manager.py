@@ -102,6 +102,7 @@ class ProjectManager:
         # Inicializa a Bíblia de Personagens com o Narrador padrão
         bible = CharacterBible(project_slug=clean_slug)
         narrador_voice = get_voice_by_id(default_narrator_voice) or VOICE_CATALOG["edge_antonio"]
+        narrador_fb = find_fallback_voice(narrador_voice)
 
         narrador = Character(
             id="narrador",
@@ -113,8 +114,8 @@ class ProjectManager:
             accent=narrador_voice.accent,
             voice_id=narrador_voice.id,
             engine=narrador_voice.engine,
-            fallback_voice_id=narrador_voice.id,
-            fallback_engine=narrador_voice.engine if narrador_voice.engine in ("edge", "kokoro") else "edge",
+            fallback_voice_id=narrador_fb.id,
+            fallback_engine=narrador_fb.engine if narrador_fb.engine in ("edge", "kokoro") else "edge",
             baseline=CharacterBaseline(pitch_offset_hz=0, rate_offset_pct=-4, volume_offset_pct=0),
             acting_style="Narração clássica de audiolivro, com ritmo contido e excelente dicção.",
         )
@@ -467,13 +468,8 @@ class ProjectManager:
         prompt_final = custom_acting_prompt or acting_prompt
         pause_final_ms = int(pause_base_ms * pause_mult)
 
-        # Resgata o código de voz bruto do motor para Edge-TTS
-        voz_info = get_voice_by_id(character.voice_id)
-        raw_voice_id = voz_info.engine_voice_id if voz_info else character.voice_id
-
-        fallback_info = get_voice_by_id(character.fallback_voice_id)
-        raw_fallback_id = fallback_info.engine_voice_id if fallback_info else character.fallback_voice_id
-
+        # IDs do catálogo são mantidos no bloco (ex: "edge_antonio", "gemini_zephyr").
+        # A resolução para o código bruto do motor (engine_voice_id) acontece apenas no synthesizer.
         return SpeechBlock(
             index=index,
             character_id=character.id,
@@ -483,9 +479,9 @@ class ProjectManager:
             emotion=emotion_label,
             pause_after_ms=pause_final_ms,
             engine=character.engine,
-            voice_id=raw_voice_id,
+            voice_id=character.voice_id,
             fallback_engine=character.fallback_engine,
-            fallback_voice_id=raw_fallback_id,
+            fallback_voice_id=character.fallback_voice_id,
             rate=rate_str,
             pitch=pitch_str,
             volume=vol_str,

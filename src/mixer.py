@@ -40,6 +40,21 @@ if ffmpeg_parent not in os.environ.get("PATH", ""):
     os.environ["PATH"] = f"{ffmpeg_parent};{os.environ.get('PATH', '')}"
 AudioSegment.converter = FFMPEG_EXE
 
+# Cada ponto percentual de volume do bloco vale 0.3 dB (ex: "-10%" -> -3 dB, "+6%" -> +1.8 dB)
+VOLUME_DB_PER_PCT = 0.3
+MAX_POSITIVE_GAIN_DB = 3.0
+
+
+def parse_volume_to_db(volume: Optional[str]) -> float:
+    """Converte o volume do bloco ('+6%', '-10%') em ganho proporcional em dB (travado em +3 dB)."""
+    if not volume:
+        return 0.0
+    import re
+    m = re.match(r"^\s*([+-]?\d+(?:\.\d+)?)\s*%?\s*$", str(volume))
+    if not m:
+        return 0.0
+    return min(MAX_POSITIVE_GAIN_DB, float(m.group(1)) * VOLUME_DB_PER_PCT)
+
 
 def generate_room_tone(duration_ms: int, frame_rate: int = 24000) -> AudioSegment:
     """
@@ -80,6 +95,7 @@ class AudioMixer:
         is_kokoro: bool = False,
         enable_kokoro_eq: bool = True,
         enable_room_tone: bool = True,
+        volume: Optional[str] = None,
     ) -> Path:
         """
         Padroniza taxa de amostragem (24kHz), mono, equaliza volume de pico (headroom 1.0),
@@ -134,8 +150,13 @@ class AudioMixer:
         if len(segmento) > 60:
             segmento = segmento.fade_in(30).fade_out(30)
 
-        # 4. Nivelamento de Volume (Loudness / Peak Normalization com 1.0 dB de headroom)
-        segmento_normalizado = effects.normalize(segmento, headroom=1.0)
+        # 4. Nivelamento de Volume (Peak Normalization) + Dinâmica emocional do bloco.
+        #    Reserva 3 dB extras de headroom para que ganhos positivos (ex: "+10%" -> +3 dB)
+        #    nunca ultrapassem -1 dBFS, preservando a diferença entre sussurros e falas intensas.
+        ganho_db = parse_volume_to_db(volume)
+        segmento_normalizado = effects.normalize(segmento, headroom=1.0 + MAX_POSITIVE_GAIN_DB)
+        if ganho_db:
+            segmento_normalizado = segmento_normalizado.apply_gain(ganho_db)
 
         # 5. Geração do ambiente acústico orgânico nas pausas (ou silêncio limpo se desativado)
         duracao_pausa = max(100, pause_after_ms)
@@ -247,6 +268,7 @@ class AudioMixer:
                 is_kokoro=is_kokoro,
                 enable_kokoro_eq=enable_kokoro_eq,
                 enable_room_tone=enable_room_tone,
+                volume=getattr(bloco, "volume", None),
             )
             blocos_normalizados.append(norm_path)
 

@@ -1,6 +1,7 @@
 """Catálogo unificado e inteligente de vozes com metadados para múltiplos motores (Edge-TTS, Kokoro-ONNX e Gemini Audio)."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 EngineType = Literal["edge", "kokoro", "gemini"]
@@ -63,7 +64,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Francisca",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="brasileiro",
         timbre="expressivo_envolvente",
         engine_voice_id="pt-BR-FranciscaNeural",
@@ -102,7 +103,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Raquel",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="portugues",
         timbre="suave_lusitano",
         engine_voice_id="pt-PT-RaquelNeural",
@@ -153,7 +154,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Ava",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="americano",
         timbre="expressiva_calorosa",
         engine_voice_id="en-US-AvaMultilingualNeural",
@@ -177,7 +178,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Vivienne",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="frances",
         timbre="suave_elegante",
         engine_voice_id="fr-FR-VivienneMultilingualNeural",
@@ -213,7 +214,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Seraphina",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="alemao",
         timbre="clara_precisa",
         engine_voice_id="de-DE-SeraphinaMultilingualNeural",
@@ -249,7 +250,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Elvira",
         engine="edge",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="espanhol",
         timbre="expressiva_vibrante",
         engine_voice_id="es-ES-ElviraNeural",
@@ -452,7 +453,7 @@ VOICE_CATALOG: Dict[str, VoiceProfile] = {
         name="Leda (Gemini)",
         engine="gemini",
         gender="F",
-        apparent_age="adulta",
+        apparent_age="adulto",
         accent="brasileiro",
         timbre="elegante_firme",
         engine_voice_id="Leda",
@@ -505,56 +506,68 @@ def list_voices(
     return resultado
 
 
+def is_kokoro_available(models_dir: Optional[Path] = None) -> bool:
+    """Verifica se os pesos locais do Kokoro (ONNX + vozes) existem em data/models/."""
+    base = Path(models_dir) if models_dir else (Path(__file__).resolve().parent.parent / "data" / "models")
+    onnx_ok = (base / "kokoro-v1.0.onnx").exists() or (base / "kokoro-v0_19.onnx").exists()
+    voices_ok = (base / "voices-v1.0.bin").exists() or (base / "voices.json").exists()
+    return onnx_ok and voices_ok
+
+
+def _best_match(candidatas: List[VoiceProfile], primary_voice: VoiceProfile, use_accent: bool) -> Optional[VoiceProfile]:
+    """Cascata de afinidade (gênero/idade/sotaque), preferindo vozes não-fusão."""
+    def _pick(lst: List[VoiceProfile]) -> Optional[VoiceProfile]:
+        if not lst:
+            return None
+        puras = [v for v in lst if not v.is_blend]
+        return (puras or lst)[0]
+
+    g, a, s = primary_voice.gender, primary_voice.apparent_age, primary_voice.accent
+    niveis = []
+    if use_accent:
+        niveis.append([v for v in candidatas if v.gender == g and v.apparent_age == a and v.accent == s])
+        niveis.append([v for v in candidatas if v.gender == g and v.accent == s])
+    niveis.append([v for v in candidatas if v.gender == g and v.apparent_age == a])
+    niveis.append([v for v in candidatas if v.gender == g])
+    for lst in niveis:
+        escolhida = _pick(lst)
+        if escolhida:
+            return escolhida
+    return None
+
+
 def find_fallback_voice(primary_voice: VoiceProfile) -> VoiceProfile:
     """
-    Encontra a melhor voz de contingência garantida no Edge-TTS (nuvem ilimitada sem instalação).
-    Garante que se o Kokoro (pesos ausentes) ou Gemini (cota/chave) não puderem sintetizar,
-    o sistema sempre tenha uma voz válida pronta para falar.
+    Encontra a melhor voz de contingência.
+    - Vozes Gemini: prioriza o Kokoro local (qualidade superior, offline) se os pesos existirem
+      e o sotaque for brasileiro; caso contrário usa o Edge-TTS.
+    - Vozes Kokoro: contingência no Edge-TTS (se o Kokoro falhar, ele está indisponível).
+    - Vozes Edge: retornam a si mesmas.
     """
     if primary_voice.engine == "edge":
         return primary_voice
 
-    # Para vozes Gemini ou Kokoro, busca o melhor equivalente exclusivamente no Edge-TTS
-    candidatas = [v for v in VOICE_CATALOG.values() if v.engine == "edge"]
+    if (
+        primary_voice.engine == "gemini"
+        and primary_voice.accent == "brasileiro"
+        and is_kokoro_available()
+    ):
+        kokoros = [v for v in VOICE_CATALOG.values() if v.engine == "kokoro"]
+        escolhida = _best_match(kokoros, primary_voice, use_accent=False)
+        if escolhida:
+            return escolhida
 
-    # 1. Tenta casar Gênero + Idade + Sotaque
-    exatas = [
-        v
-        for v in candidatas
-        if v.gender == primary_voice.gender
-        and v.apparent_age == primary_voice.apparent_age
-        and v.accent == primary_voice.accent
-    ]
-    if exatas:
-        return exatas[0]
+    edges = [v for v in VOICE_CATALOG.values() if v.engine == "edge"]
+    return _best_match(edges, primary_voice, use_accent=True) or VOICE_CATALOG["edge_antonio"]
 
-    # 2. Tenta casar Gênero + Sotaque (relaxa idade)
-    sotaque_genero = [
-        v
-        for v in candidatas
-        if v.gender == primary_voice.gender
-        and v.accent == primary_voice.accent
-    ]
-    if sotaque_genero:
-        return sotaque_genero[0]
 
-    # 3. Tenta casar Gênero + Idade
-    idade_genero = [
-        v
-        for v in candidatas
-        if v.gender == primary_voice.gender
-        and v.apparent_age == primary_voice.apparent_age
-    ]
-    if idade_genero:
-        return idade_genero[0]
+def find_edge_voice(primary_voice: VoiceProfile) -> VoiceProfile:
+    """Contingência de último recurso, sempre no Edge-TTS (nuvem ilimitada)."""
+    if primary_voice.engine == "edge":
+        return primary_voice
+    edges = [v for v in VOICE_CATALOG.values() if v.engine == "edge"]
+    return _best_match(edges, primary_voice, use_accent=True) or VOICE_CATALOG["edge_antonio"]
 
-    # 4. Tenta casar apenas Gênero
-    apenas_genero = [v for v in candidatas if v.gender == primary_voice.gender]
-    if apenas_genero:
-        return apenas_genero[0]
-
-    # Fallback supremo
-    return VOICE_CATALOG["edge_antonio"]
 
 
 def validate_same_gender_blend(recipe: Dict[str, float]) -> bool:

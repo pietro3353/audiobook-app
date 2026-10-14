@@ -214,7 +214,7 @@ async function handleFileSelected(file) {
         badge.textContent = `📚 PDF: ${data.total_pages} páginas detectadas`;
         const endInput = document.getElementById("endPageInput");
         endInput.max = data.total_pages;
-        endInput.value = Math.min(3, data.total_pages);
+        endInput.value = data.total_pages;
       } else {
         const err = await res.json().catch(() => ({}));
         const errMsg = err.detail || res.statusText || "Não foi possível ler as páginas do PDF.";
@@ -234,7 +234,10 @@ async function handleFileSelected(file) {
 }
 
 async function extractDocumentScope() {
-  if (!state.selectedFile) return;
+  if (!state.selectedFile) {
+    alert("Por favor, selecione ou arraste um arquivo (PDF, EPUB, TXT ou MD) primeiro.");
+    return;
+  }
 
   const btn = document.getElementById("btnExtractScope");
   if (btn) {
@@ -256,7 +259,7 @@ async function extractDocumentScope() {
   // Verifica se o usuário quer importar o documento completo ou limitar
   const checkImportAll = document.getElementById("checkImportAll");
   if (checkImportAll && !checkImportAll.checked) {
-    const maxParags = document.getElementById("maxParagsInput").value || 15;
+    const maxParags = document.getElementById("maxParagsInput").value || 50;
     formData.append("max_paragraphs", maxParags);
   }
 
