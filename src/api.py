@@ -28,6 +28,7 @@ load_dotenv()
 
 import src
 from src.director import Director
+from src.emotions import calculate_acoustic_parameters
 from src.extractor import (
     cure_text,
     detect_chapters,
@@ -79,6 +80,20 @@ class CreateProjectRequest(BaseModel):
     title: str
     mode: str = "fiction"
     engine_strategy: str = "hybrid"
+
+
+class UpdateProjectRequest(BaseModel):
+    title: Optional[str] = None
+    mode: Optional[str] = None
+    engine_strategy: Optional[str] = None
+
+
+class UpdateSpeechBlockRequest(BaseModel):
+    text: Optional[str] = None
+    text_for_tts: Optional[str] = None
+    character_id: Optional[str] = None
+    emotion: Optional[str] = None
+    pause_after_ms: Optional[int] = None
 
 
 class UpdateCharacterRequest(BaseModel):
@@ -198,6 +213,24 @@ def get_project(slug: str):
     return meta.model_dump()
 
 
+@app.put("/api/projects/{slug}")
+def update_project(slug: str, req: UpdateProjectRequest):
+    """Atualiza metadados do projeto (modo, estratégia de motores e título)."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    meta = pm.load_metadata(slug)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    if req.title is not None and req.title.strip():
+        meta.title = req.title.strip()
+    if req.mode is not None:
+        meta.mode = req.mode
+    if req.engine_strategy is not None:
+        meta.engine_strategy = req.engine_strategy
+    pm.save_metadata(meta)
+    return {"success": True, "project": meta.model_dump()}
+
+
 @app.delete("/api/projects/{slug}")
 def delete_project(slug: str):
     """Exclui permanentemente um projeto e todos os seus arquivos."""
@@ -292,6 +325,98 @@ def get_chapter_script(slug: str, chapter_number: int):
     if not script:
         return {"exists": False, "script": None}
     return {"exists": True, "script": script.model_dump()}
+
+
+@app.put("/api/projects/{slug}/script/{chapter_number}/blocks/{block_index}")
+def update_script_block(
+    slug: str,
+    chapter_number: int,
+    block_index: int,
+    req: UpdateSpeechBlockRequest,
+):
+    """Atualiza um bloco específico do roteiro, recalcula parâmetros acústicos e invalida cache."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    script = pm.load_chapter_script(slug, chapter_number)
+    if not script or not script.blocks:
+        raise HTTPException(status_code=404, detail="Roteiro ou capítulo não encontrado.")
+
+    target_block = None
+    for b in script.blocks:
+        if b.index == block_index:
+            target_block = b
+            break
+    if not target_block and 0 <= block_index < len(script.blocks):
+        target_block = script.blocks[block_index]
+
+    if not target_block:
+        raise HTTPException(status_code=404, detail=f"Bloco {block_index} não encontrado no capítulo {chapter_number}.")
+
+    bible = pm.load_character_bible(slug)
+
+    if req.character_id is not None and req.character_id != target_block.character_id:
+        target_block.character_id = req.character_id
+        char = bible.get(req.character_id)
+        if char:
+            target_block.voice_id = char.voice_id
+            target_block.engine = char.engine
+            target_block.fallback_voice_id = char.fallback_voice_id
+            target_block.fallback_engine = char.fallback_engine
+            target_block.blend_recipe = char.blend_recipe
+
+    if req.text is not None:
+        target_block.text = req.text.strip()
+    if req.text_for_tts is not None:
+        target_block.text_for_tts = req.text_for_tts.strip() if req.text_for_tts else None
+    if req.emotion is not None:
+        target_block.emotion = req.emotion.strip()
+    if req.pause_after_ms is not None:
+        target_block.pause_after_ms = max(0, req.pause_after_ms)
+
+    char = bible.get(target_block.character_id)
+    base_rate = char.baseline.rate_offset_pct if char and char.baseline else 0
+    base_pitch = char.baseline.pitch_offset_hz if char and char.baseline else 0
+    base_vol = char.baseline.volume_offset_pct if char and char.baseline else 0
+    personality = char.personality if char else ""
+
+    rate_str, pitch_str, vol_str, pause_mult, acting_prompt = calculate_acoustic_parameters(
+        baseline_rate_pct=base_rate,
+        baseline_pitch_hz=base_pitch,
+        baseline_volume_pct=base_vol,
+        emotion_label=target_block.emotion,
+        character_personality=personality,
+    )
+    target_block.rate = rate_str
+    target_block.pitch = pitch_str
+    target_block.volume = vol_str
+    target_block.acting_prompt = acting_prompt
+
+    # Invalida cache temporário deste bloco
+    temp_dir = pm.get_project_dir(slug) / "temp"
+    if temp_dir.exists():
+        patterns = [
+            f"block_{target_block.index:04d}_*.mp3",
+            f"block_{target_block.index}_*.mp3",
+            f"block_{block_index:04d}_*.mp3",
+            f"block_{block_index}_*.mp3",
+        ]
+        for pat in patterns:
+            for old_chunk in temp_dir.glob(pat):
+                try:
+                    old_chunk.unlink()
+                except Exception:
+                    pass
+
+    # Reseta auditoria para forçar nova síntese
+    target_block.actual_engine = None
+    target_block.actual_voice_id = None
+    target_block.fallback_triggered = False
+    target_block.fallback_reason = None
+
+    script.total_chars = sum(len(b.text) for b in script.blocks)
+    pm.save_chapter_script(slug, script)
+
+    return {"success": True, "block": target_block.model_dump()}
 
 
 # ==============================================================================
