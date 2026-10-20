@@ -34,8 +34,9 @@ load_dotenv()
 # Limite seguro de requisições simultâneas para não estourar websockets
 MAX_CONCURRENT_REQUESTS = 4
 
-# Modelo TTS padrão do Gemini (existente na Gemini Developer API)
-DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+# Modelo TTS padrão do Gemini (primário: 3.8-flash-lite-tts, fallback: 2.5-flash-preview-tts)
+DEFAULT_GEMINI_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+FALLBACK_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
 GEMINI_PREBUILT_VOICES = ("Puck", "Charon", "Kore", "Fenrir", "Aoede", "Zephyr", "Leda", "Orus")
 
@@ -257,7 +258,10 @@ class Synthesizer:
             nome_voz = "Puck"
 
         modelo_cfg = os.getenv("GEMINI_TTS_MODEL", DEFAULT_GEMINI_TTS_MODEL).strip() or DEFAULT_GEMINI_TTS_MODEL
-        modelos = [modelo_cfg] + ([DEFAULT_GEMINI_TTS_MODEL] if modelo_cfg != DEFAULT_GEMINI_TTS_MODEL else [])
+        modelos = [modelo_cfg]
+        for m in (DEFAULT_GEMINI_TTS_MODEL, FALLBACK_GEMINI_TTS_MODEL):
+            if m not in modelos:
+                modelos.append(m)
 
         async with self.gemini_semaphore:
             if self._gemini_quota_exhausted:

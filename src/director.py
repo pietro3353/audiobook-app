@@ -347,10 +347,10 @@ class Director:
 
             # Chamada compatível com a Gemini Developer API com resiliência a 503 e sobrecarga
             schema = get_cleaned_director_schema()
-            default_mod = "gemini-2.5-flash-lite"
+            default_mod = "gemini-3.5-flash-lite"
             env_mod = os.getenv("GEMINI_DIRECTOR_MODEL", default_mod).strip() or default_mod
             candidatos = [env_mod]
-            for m in ("gemini-2.5-flash-lite", "gemini-2.5-flash"):
+            for m in ("gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"):
                 if m not in candidatos:
                     candidatos.append(m)
 

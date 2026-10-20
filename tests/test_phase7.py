@@ -144,9 +144,9 @@ def test_frontend_v7_assets_and_toast():
     assert res_index.status_code == 200
     html = res_index.text
 
-    # Verifica cache-busting v7.0
-    assert "styles.css?v=7.0" in html
-    assert "app.js?v=7.0" in html
+    # Verifica cache-busting atualizado
+    assert "styles.css?v=" in html
+    assert "app.js?v=" in html
 
     # Verifica novos elementos visuais de UX
     assert "quickProjectMode" in html

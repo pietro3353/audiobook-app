@@ -1,16 +1,17 @@
 /**
- * AUDIOBOOK STUDIO AI - FRONTEND APPLICATION (SPA) - v7.0
- * Conecta-se à API FastAPI local ou remota para extração, direção e síntese de voz.
+ * AUDIOBOOK STUDIO PRO — FRONTEND APPLICATION (SPA) - v8.0
+ * Conecta-se à API FastAPI para extração, direção (gemini-3.5-flash-lite)
+ * e síntese multi-motor (gemini-3.8-flash-lite-tts, Kokoro ONNX e Edge-TTS).
  */
 
-// URL configurável da API Backend (ajustável para nuvem no futuro)
 const API_BASE = window.location.origin.includes("github.io")
   ? "http://localhost:8000"
   : window.location.origin;
 
-// Estado da Aplicação com persistência em LocalStorage
 const state = {
   currentSlug: localStorage.getItem("audiobook_active_slug") || "demo_audiobook",
+  currentMode: "fiction",
+  currentStrategy: "hybrid",
   voicesCatalog: [],
   characters: [],
   script: null,
@@ -18,6 +19,14 @@ const state = {
   selectedFile: null,
   isRendering: false,
 };
+
+function refreshIcons() {
+  if (window.lucide && typeof window.lucide.createIcons === "function") {
+    try {
+      window.lucide.createIcons();
+    } catch (_) {}
+  }
+}
 
 // ==============================================================================
 // SISTEMA DE NOTIFICAÇÕES TOAST (DARK THEME)
@@ -32,10 +41,10 @@ function showToast(message, type = "info", duration = 4500) {
   const icons = {
     success: "✓",
     error: "✕",
-    warning: "⚠️",
-    info: "ℹ️",
+    warning: "!",
+    info: "i",
   };
-  const icon = icons[type] || "ℹ️";
+  const icon = icons[type] || "i";
 
   toast.innerHTML = `
     <span class="toast-icon">${icon}</span>
@@ -63,13 +72,14 @@ function showToast(message, type = "info", duration = 4500) {
 // INICIALIZAÇÃO
 // ==============================================================================
 document.addEventListener("DOMContentLoaded", async () => {
+  refreshIcons();
   initEventListeners();
+  initCustomAudioPlayer();
   await checkBackendStatus();
   await loadVoicesCatalog();
   await loadProjects();
   await loadCurrentProjectData();
 
-  // Verifica status do backend a cada 10 segundos
   setInterval(checkBackendStatus, 10000);
 });
 
@@ -89,19 +99,19 @@ async function checkBackendStatus() {
       const data = await res.json();
       badge.className = "status-badge status-online";
       text.textContent = data.gemini_active
-        ? "🟢 Motor Online (Gemini + Local)"
-        : "🟢 Motor Online (100% Local)";
+        ? "Estúdio Online (Gemini + Local)"
+        : "Estúdio Online (100% Local)";
 
       if (bGemini) {
-        bGemini.textContent = data.gemini_active ? "🟢 Online" : "⚪ Offline / Sem Chave";
+        bGemini.textContent = data.gemini_active ? "Online (3.5 / 3.8)" : "Sem Chave";
         bGemini.className = `badge ${data.gemini_active ? "badge-accent" : "badge-warning"}`;
       }
       if (bKokoro) {
-        bKokoro.textContent = data.kokoro_local_ready ? "🟢 Pronto (Local ONNX)" : "⚪ Ausente";
-        bKokoro.className = `badge ${data.kokoro_local_ready ? "badge-info" : "badge-danger"}`;
+        bKokoro.textContent = data.kokoro_local_ready ? "Pronto (ONNX)" : "Ausente";
+        bKokoro.className = `badge ${data.kokoro_local_ready ? "badge-success" : "badge-danger"}`;
       }
       if (bFfmpeg) {
-        bFfmpeg.textContent = data.ffmpeg_ready ? "🟢 Pronto (Instalado)" : "⚪ Ausente";
+        bFfmpeg.textContent = data.ffmpeg_ready ? "Pronto (Master)" : "Ausente";
         bFfmpeg.className = `badge ${data.ffmpeg_ready ? "badge-info" : "badge-danger"}`;
       }
     } else {
@@ -109,10 +119,10 @@ async function checkBackendStatus() {
     }
   } catch (e) {
     badge.className = "status-badge status-offline";
-    text.textContent = "⚪ Motor Offline (Inicie o backend)";
-    if (bGemini) { bGemini.textContent = "⚪ Offline"; bGemini.className = "badge badge-danger"; }
-    if (bKokoro) { bKokoro.textContent = "⚪ Offline"; bKokoro.className = "badge badge-danger"; }
-    if (bFfmpeg) { bFfmpeg.textContent = "⚪ Offline"; bFfmpeg.className = "badge badge-danger"; }
+    text.textContent = "Backend Offline";
+    if (bGemini) { bGemini.textContent = "Offline"; bGemini.className = "badge badge-danger"; }
+    if (bKokoro) { bKokoro.textContent = "Offline"; bKokoro.className = "badge badge-danger"; }
+    if (bFfmpeg) { bFfmpeg.textContent = "Offline"; bFfmpeg.className = "badge badge-danger"; }
   }
 }
 
@@ -129,8 +139,76 @@ async function loadVoicesCatalog() {
 }
 
 // ==============================================================================
-// 2. GESTÃO DE PROJETOS & SELETORES RÁPIDOS
+// 2. GESTÃO DE PROJETOS, PRESETS & GUIA VIVO
 // ==============================================================================
+function updateContextGuideBar(mode, strategy) {
+  state.currentMode = mode || "fiction";
+  state.currentStrategy = strategy || "hybrid";
+
+  const btnLecture = document.getElementById("btnPresetLecture");
+  const btnDrama = document.getElementById("btnPresetDrama");
+  const liveSummary = document.getElementById("projectLiveSummary");
+
+  const isSingleVoice = state.currentMode === "summary" || state.currentMode === "non_fiction";
+
+  if (btnLecture) btnLecture.classList.toggle("active", isSingleVoice);
+  if (btnDrama) btnDrama.classList.toggle("active", !isSingleVoice);
+
+  if (liveSummary) {
+    if (isSingleVoice) {
+      const stratDesc = state.currentStrategy === "unlimited"
+        ? "usando motores 100% locais/ilimitados (Kokoro ONNX / Edge)"
+        : "usando a voz principal escalada para o Narrador";
+      liveSummary.innerHTML = `<strong>Voz Única Ativa:</strong> 100% do texto será lido pelo Narrador (sem troca de vozes no meio da aula) e com parágrafos fundidos para leitura contínua (${stratDesc}).`;
+    } else {
+      const stratDesc = state.currentStrategy === "hybrid"
+        ? "e reserva o Gemini 3.8 TTS para atuação dramática nos diálogos"
+        : "usando vozes ilimitadas (Kokoro ONNX e Edge-TTS) para cada personagem";
+      liveSummary.innerHTML = `<strong>Elenco Completo Ativo:</strong> A IA identifica cada personagem nos diálogos, escala vozes distintas na Bíblia ${stratDesc}.`;
+    }
+  }
+}
+
+async function applyProjectPreset(presetType) {
+  if (!state.currentSlug) return;
+
+  const modeSel = document.getElementById("quickProjectMode");
+  const stratSel = document.getElementById("quickProjectStrategy");
+  const checkFuse = document.getElementById("checkFuseSpeeches");
+
+  let targetMode = "fiction";
+  let targetStrategy = "hybrid";
+
+  if (presetType === "lecture") {
+    targetMode = "summary";
+    targetStrategy = "unlimited";
+    if (checkFuse) checkFuse.checked = true;
+  } else {
+    targetMode = "fiction";
+    targetStrategy = "hybrid";
+  }
+
+  if (modeSel) modeSel.value = targetMode;
+  if (stratSel) stratSel.value = targetStrategy;
+  updateContextGuideBar(targetMode, targetStrategy);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: targetMode, engine_strategy: targetStrategy }),
+    });
+    if (res.ok) {
+      const label = presetType === "lecture"
+        ? "Modo Aula / Resumo Didático (Voz Única + Ilimitado)"
+        : "Modo Livro / Rádio-Teatro (Elenco Multi-Voz + Híbrido)";
+      showToast(`Perfil aplicado: ${label}`, "success", 3200);
+    }
+  } catch (e) {
+    showToast("Falha ao aplicar perfil no projeto.", "error");
+  }
+}
+
 async function loadProjects() {
   const select = document.getElementById("projectSelect");
   try {
@@ -155,7 +233,6 @@ async function loadProjects() {
         }
         localStorage.setItem("audiobook_active_slug", state.currentSlug);
       } else {
-        // Se a lista estiver vazia, cria projeto padrão
         state.currentSlug = "meu_audiolivro";
         localStorage.setItem("audiobook_active_slug", state.currentSlug);
         await fetch(`${API_BASE}/api/projects`, {
@@ -175,7 +252,7 @@ async function loadProjects() {
 async function loadCurrentProjectData() {
   if (!state.currentSlug) return;
 
-  // 1. Carrega Metadados do Projeto e Sincroniza Seletores Rápidos do Topo
+  // 1. Carrega Metadados do Projeto e Sincroniza Seletores + Guia Vivo
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}`);
     if (res.ok) {
@@ -184,6 +261,7 @@ async function loadCurrentProjectData() {
       const stratSel = document.getElementById("quickProjectStrategy");
       if (modeSel && meta.mode) modeSel.value = meta.mode;
       if (stratSel && meta.engine_strategy) stratSel.value = meta.engine_strategy;
+      updateContextGuideBar(meta.mode, meta.engine_strategy);
     }
   } catch (e) {
     console.error("Erro ao carregar metadados do projeto:", e);
@@ -214,7 +292,7 @@ async function loadCurrentProjectData() {
     console.error("Erro ao carregar Bíblia:", e);
   }
 
-  // 4. Carrega Roteiro existente do Capítulo 1 e Persiste Auditoria se disponível
+  // 4. Carrega Roteiro existente do Capítulo 1 e Persiste Auditoria
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/script/1`);
     if (res.ok) {
@@ -222,7 +300,6 @@ async function loadCurrentProjectData() {
       if (data.exists && data.script) {
         state.script = data.script;
         renderScriptTimeline();
-        // Se já tiver auditoria gravada nas falas, exibe na Etapa 3 imediatamente
         if (state.script.blocks && state.script.blocks.some((b) => b.actual_engine)) {
           renderAuditList(state.script.blocks);
         }
@@ -281,7 +358,7 @@ async function handleFileSelected(file) {
 
   if (isPdf) {
     if (pdfPageInputsWrapper) pdfPageInputsWrapper.classList.remove("hidden");
-    badge.textContent = "⏳ Analisando páginas do PDF...";
+    badge.textContent = "Analisando páginas do PDF...";
     if (typeHint) typeHint.textContent = `${file.name} (${Math.round(file.size / 1024)} KB)`;
 
     const formData = new FormData();
@@ -294,14 +371,14 @@ async function handleFileSelected(file) {
       });
       if (res.ok) {
         const data = await res.json();
-        badge.textContent = `📚 PDF: ${data.total_pages} páginas detectadas`;
+        badge.textContent = `PDF: ${data.total_pages} páginas detectadas`;
         const endInput = document.getElementById("endPageInput");
         endInput.max = data.total_pages;
         endInput.value = data.total_pages;
       } else {
         const err = await res.json().catch(() => ({}));
         const errMsg = err.detail || res.statusText || "Não foi possível ler as páginas do PDF.";
-        badge.textContent = `⚠️ Erro ao ler PDF: ${errMsg}`;
+        badge.textContent = `Erro ao ler PDF: ${errMsg}`;
         showToast(`Erro ao ler páginas do PDF: ${errMsg}`, "error");
       }
     } catch (e) {
@@ -309,12 +386,10 @@ async function handleFileSelected(file) {
       showToast(`Erro de conexão ao ler páginas do PDF: ${e.message || e}`, "error");
     }
   } else {
-    // TXT, EPUB ou MD
     if (pdfPageInputsWrapper) pdfPageInputsWrapper.classList.add("hidden");
-    badge.textContent = `📄 Arquivo: ${file.name}`;
+    badge.textContent = `Arquivo: ${file.name}`;
     if (typeHint) typeHint.textContent = `${Math.round(file.size / 1024)} KB • Texto puro`;
 
-    // Dispara extração automática imediata para documentos diretos
     if (isDirectDoc) {
       extractDocumentScope();
     }
@@ -330,7 +405,7 @@ async function extractDocumentScope() {
   const btn = document.getElementById("btnExtractScope");
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "⏳ Processando texto...";
+    btn.innerHTML = `<span>Processando documento...</span>`;
   }
 
   const formData = new FormData();
@@ -344,7 +419,6 @@ async function extractDocumentScope() {
     formData.append("end_page", endPage);
   }
 
-  // Verifica se o usuário quer importar o documento completo ou limitar
   const checkImportAll = document.getElementById("checkImportAll");
   if (checkImportAll && !checkImportAll.checked) {
     const maxParags = document.getElementById("maxParagsInput").value || 50;
@@ -362,7 +436,6 @@ async function extractDocumentScope() {
       txtArea.value = data.curated_text || "";
       updateTextMetrics(txtArea.value);
 
-      // Salva o texto automaticamente no projeto ativo
       await saveProjectText(txtArea.value);
       showToast("Texto importado e curado com sucesso!", "success");
     } else {
@@ -375,7 +448,8 @@ async function extractDocumentScope() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "⚡ Processar e Inserir no Editor";
+      btn.innerHTML = `<i data-lucide="zap" class="icon-sm"></i><span>Processar e Inserir no Editor</span>`;
+      refreshIcons();
     }
   }
 }
@@ -405,7 +479,7 @@ function updateTextMetrics(text) {
 }
 
 // ==============================================================================
-// 5. ETAPA 2: SALA DO DIRETOR, ELENCO & ROTEIRO INTERATIVO
+// 5. ETAPA 2: SALA DO DIRETOR, ELENCO REFINADO & ROTEIRO INTERATIVO
 // ==============================================================================
 async function runDirector() {
   const text = document.getElementById("curatedTextArea").value.trim();
@@ -417,7 +491,7 @@ async function runDirector() {
 
   const btn = document.getElementById("btnRunDirector");
   btn.disabled = true;
-  btn.textContent = "Analisando cena com IA...";
+  btn.innerHTML = `<span>Analisando cena e estruturando falas...</span>`;
 
   const mode = document.querySelector('input[name="directorMode"]:checked').value;
   const forceExpress = mode === "express";
@@ -443,7 +517,7 @@ async function runDirector() {
       state.characters = data.characters || [];
       renderCastGrid();
       renderScriptTimeline();
-      showToast(`Direção concluída! ${state.script.blocks.length} falas estruturadas.`, "success");
+      showToast(`Direção concluída! ${state.script.blocks.length} blocos prontos para síntese.`, "success");
     } else {
       const err = await res.json().catch(() => ({}));
       const errMsg = err.detail || res.statusText || "Erro desconhecido ao processar o roteiro.";
@@ -453,17 +527,32 @@ async function runDirector() {
     showToast(`Falha de conexão com o motor do Diretor: ${e.message || e}`, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "🎬 Analisar e Dirigir Cena";
+    btn.innerHTML = `<i data-lucide="wand-2" class="icon-sm"></i><span>Analisar e Dirigir Cena</span>`;
+    refreshIcons();
   }
+}
+
+function getCharacterInitials(name) {
+  if (!name) return "VO";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function formatEngineLabel(engine) {
+  const e = (engine || "edge").toLowerCase();
+  if (e === "gemini") return "GEMINI 3.8";
+  if (e === "kokoro") return "KOKORO ONNX";
+  return "EDGE NEURAL";
 }
 
 function renderCastGrid() {
   const grid = document.getElementById("castGrid");
   const countBadge = document.getElementById("castCountBadge");
-  countBadge.textContent = `${state.characters.length} atores`;
+  countBadge.textContent = `${state.characters.length} ${state.characters.length === 1 ? "voz" : "vozes"}`;
 
   if (!state.characters || state.characters.length === 0) {
-    grid.innerHTML = '<div class="empty-state">Nenhum personagem escalado ainda. Clique em "Analisar e Dirigir Cena".</div>';
+    grid.innerHTML = '<div class="empty-state">Nenhum personagem escalado ainda. Execute a Direção Cênica ao lado.</div>';
     return;
   }
 
@@ -472,43 +561,50 @@ function renderCastGrid() {
     const card = document.createElement("div");
     card.className = "char-card";
 
-    // Opções de voz para o select
+    const initials = getCharacterInitials(char.name);
+    let avatarClass = "char-avatar-m";
+    if (char.id === "narrador") avatarClass = "char-avatar-narrador";
+    else if (char.gender === "F") avatarClass = "char-avatar-f";
+
     const optionsHtml = state.voicesCatalog
       .map((v) => {
         const selected = v.id === char.voice_id ? "selected" : "";
-        return `<option value="${v.id}" ${selected}>${v.name} [${v.engine.toUpperCase()}] - ${v.timbre}</option>`;
+        return `<option value="${v.id}" ${selected}>${v.name} [${v.engine.toUpperCase()}] — ${v.timbre}</option>`;
       })
       .join("");
 
     card.innerHTML = `
       <div class="char-card-top">
-        <div>
-          <span class="char-name">${char.name}</span>
-          <div class="char-details">${char.gender} • ${char.apparent_age} • sotaque ${char.accent}</div>
+        <div class="char-identity">
+          <div class="char-avatar ${avatarClass}">${initials}</div>
+          <div>
+            <span class="char-name">${char.name}</span>
+            <div class="char-details">${char.gender} • ${char.apparent_age} • ${char.accent}</div>
+          </div>
         </div>
-        <span class="badge badge-accent">${char.engine.toUpperCase()}</span>
+        <span class="badge badge-accent">${formatEngineLabel(char.engine)}</span>
       </div>
       <div class="char-card-body">
-        <label style="font-size: 0.72rem; color: var(--text-muted)">Voz Primária:</label>
+        <label style="font-size: 0.71rem; color: var(--text-muted)">Timbre Escalado</label>
         <select class="styled-select voice-changer" data-char-id="${char.id}">
           ${optionsHtml}
         </select>
       </div>
       <div class="char-card-footer">
-        <button class="btn btn-secondary btn-sm btn-preview-voice" data-voice-id="${char.voice_id}">▶ Amostra (2s)</button>
+        <button class="btn btn-secondary btn-sm btn-preview-voice" data-voice-id="${char.voice_id}" type="button">
+          <span>Ouvir Amostra (2s)</span>
+        </button>
       </div>
     `;
 
     grid.appendChild(card);
   });
 
-  // Event Listeners nos selects de voz
   grid.querySelectorAll(".voice-changer").forEach((sel) => {
     sel.addEventListener("change", async (e) => {
       const charId = e.target.dataset.charId;
       const voiceId = e.target.value;
 
-      // Sincroniza imediatamente o botão de prévia acústica do card
       const card = e.target.closest(".char-card");
       if (card) {
         const previewBtn = card.querySelector(".btn-preview-voice");
@@ -519,11 +615,11 @@ function renderCastGrid() {
     });
   });
 
-  // Event Listeners nos botões de amostra sonora de 2s
   grid.querySelectorAll(".btn-preview-voice").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
-      const voiceId = e.target.dataset.voiceId;
-      await playVoiceSample(voiceId, e.target);
+      const targetBtn = e.currentTarget;
+      const voiceId = targetBtn.dataset.voiceId;
+      await playVoiceSample(voiceId, targetBtn);
     });
   });
 }
@@ -536,7 +632,7 @@ async function updateCharacterVoice(charId, voiceId) {
       body: JSON.stringify({ voice_id: voiceId }),
     });
     if (res.ok) {
-      showToast("Voz do personagem atualizada com sucesso!", "success");
+      showToast("Voz do personagem atualizada em todo o roteiro!", "success");
       await loadCurrentProjectData();
     } else {
       const err = await res.json().catch(() => ({}));
@@ -549,9 +645,10 @@ async function updateCharacterVoice(charId, voiceId) {
 }
 
 async function playVoiceSample(voiceId, btnEl) {
-  const originalText = btnEl.textContent;
+  const originalHtml = btnEl.innerHTML;
   btnEl.disabled = true;
-  btnEl.textContent = "⏳...";
+  btnEl.classList.add("is-playing");
+  btnEl.innerHTML = `<span>Sintetizando...</span>`;
 
   try {
     const res = await fetch(`${API_BASE}/api/voices/preview`, {
@@ -564,21 +661,33 @@ async function playVoiceSample(voiceId, btnEl) {
       const audioEl = document.getElementById("previewAudioElement");
       const sep = data.audio_url.includes("?") ? "&" : "?";
       audioEl.src = `${API_BASE}${data.audio_url}${sep}t=${Date.now()}`;
-      audioEl.play();
+      btnEl.disabled = false;
+      btnEl.innerHTML = `<span>Ouvindo...</span>`;
+
+      const restoreBtn = () => {
+        btnEl.classList.remove("is-playing");
+        btnEl.innerHTML = originalHtml;
+      };
+      audioEl.onended = restoreBtn;
+      audioEl.onerror = restoreBtn;
+      audioEl.play().catch(restoreBtn);
     } else {
       const err = await res.json().catch(() => ({}));
       showToast(`Erro ao reproduzir amostra: ${err.detail || res.statusText}`, "error");
+      btnEl.classList.remove("is-playing");
+      btnEl.disabled = false;
+      btnEl.innerHTML = originalHtml;
     }
   } catch (e) {
     showToast(`Falha ao reproduzir amostra: ${e.message || e}`, "error");
-  } finally {
+    btnEl.classList.remove("is-playing");
     btnEl.disabled = false;
-    btnEl.textContent = originalText;
+    btnEl.innerHTML = originalHtml;
   }
 }
 
 // ==============================================================================
-// ROTEIRO ESTRUTURADO INTERATIVO (EDIÇÃO INLINE DE BLOCOS)
+// ROTEIRO ESTRUTURADO ESTILO DESCRIPT / STUDIO (EDIÇÃO INLINE FLUIDA)
 // ==============================================================================
 const EMOTIONS_LIST = [
   "neutro", "sussurro", "tenso", "panico", "raiva", "tristeza",
@@ -586,12 +695,18 @@ const EMOTIONS_LIST = [
   "misterio", "animado", "autoritario", "destaque_didatico", "solene"
 ];
 
+function isDefaultNeutralActingPrompt(promptText) {
+  if (!promptText) return true;
+  const lower = promptText.toLowerCase();
+  return lower.startsWith("tom equilibrado, natural e claro");
+}
+
 function renderScriptTimeline() {
   const container = document.getElementById("scriptTimeline");
   const badge = document.getElementById("scriptBlocksBadge");
 
   if (!state.script || !state.script.blocks || state.script.blocks.length === 0) {
-    container.innerHTML = '<div class="empty-state">O roteiro gerado aparecerá aqui.</div>';
+    container.innerHTML = '<div class="empty-state">O roteiro estruturado aparecerá aqui após a análise do Diretor.</div>';
     badge.textContent = "0 falas";
     return;
   }
@@ -604,7 +719,6 @@ function renderScriptTimeline() {
     item.className = "script-item";
     item.dataset.blockIndex = b.index;
 
-    // Opções de Personagens da Bíblia
     const charOptions = state.characters
       .map((c) => {
         const isSel = c.id === b.character_id ? "selected" : "";
@@ -612,7 +726,6 @@ function renderScriptTimeline() {
       })
       .join("");
 
-    // Opções de Emoção
     const emotionOptions = EMOTIONS_LIST
       .map((emo) => {
         const isSel = emo === (b.emotion || "neutro") ? "selected" : "";
@@ -620,62 +733,59 @@ function renderScriptTimeline() {
       })
       .join("");
 
-    // Nome amigável da voz escalada
     const voiceObj = state.voicesCatalog.find((v) => v.id === b.voice_id);
-    const voiceLabel = voiceObj ? `${voiceObj.name} (${voiceObj.timbre})` : (b.voice_id || "Voz Padrão");
+    const voiceLabel = voiceObj ? `${voiceObj.name}` : (b.voice_id || "Voz Padrão");
 
-    const actingHtml = b.acting_prompt
-      ? `<span class="script-item-acting" title="${b.acting_prompt}">🎭 "${b.acting_prompt}"</span>`
-      : `<span></span>`;
+    const showActing = !isDefaultNeutralActingPrompt(b.acting_prompt);
+    const actingHtml = showActing
+      ? `<div class="script-item-acting" title="${b.acting_prompt}">Direção: "${b.acting_prompt}"</div>`
+      : "";
+
+    const estimatedRows = Math.max(2, Math.min(6, Math.ceil((b.text || "").length / 110)));
 
     item.innerHTML = `
       <div class="script-item-header">
         <div class="script-item-meta">
-          <span class="block-index-label">#${b.index}</span>
-          <select class="block-char-select" data-block-index="${b.index}" title="Trocar personagem desta fala">
+          <span class="block-index-label">#${String(b.index).padStart(2, "0")}</span>
+          <select class="block-char-select" data-block-index="${b.index}" title="Personagem desta fala">
             ${charOptions}
           </select>
-          <span class="block-voice-tag" title="Voz escalada">🎙️ ${voiceLabel}</span>
-          <select class="block-emotion-select" data-block-index="${b.index}" title="Trocar emoção desta fala">
+          <span class="block-voice-tag" title="Voz atribuída">${voiceLabel}</span>
+          <select class="block-emotion-select" data-block-index="${b.index}" title="Emoção vocal">
             ${emotionOptions}
           </select>
-          <span class="badge badge-accent">${(b.engine || "EDGE").toUpperCase()}</span>
+          <span class="badge badge-accent">${formatEngineLabel(b.engine)}</span>
         </div>
-        <div class="block-pause-group">
-          <label>Pausa:</label>
-          <input type="number" class="block-pause-input" data-block-index="${b.index}" value="${b.pause_after_ms ?? 600}" min="0" step="50" title="Pausa após fala (ms)">
-          <span>ms</span>
+        <div class="script-item-right-controls">
+          <span class="block-save-indicator" id="saveBadgeBlock_${b.index}">✓ Salvo</span>
+          <div class="block-pause-group">
+            <label>Pausa</label>
+            <input type="number" class="block-pause-input" data-block-index="${b.index}" value="${b.pause_after_ms ?? 600}" min="0" step="50" title="Silêncio após a fala (ms)">
+            <span>ms</span>
+          </div>
         </div>
       </div>
-      <textarea class="block-text-input" data-block-index="${b.index}" rows="2" title="Texto da fala (editável)">${b.text}</textarea>
-      <div class="script-item-footer">
-        ${actingHtml}
-        <button class="btn btn-secondary btn-xs btn-save-block" data-block-index="${b.index}" title="Salvar alterações desta fala">💾 Salvar Fala</button>
-      </div>
+      <textarea class="block-text-input" data-block-index="${b.index}" rows="${estimatedRows}" title="Clique para editar o texto desta fala">${b.text}</textarea>
+      ${actingHtml}
     `;
 
     container.appendChild(item);
   });
 
-  // Event Listeners: Troca de Personagem
   container.querySelectorAll(".block-char-select").forEach((sel) => {
     sel.addEventListener("change", async (e) => {
       const idx = parseInt(e.target.dataset.blockIndex);
-      const newChar = e.target.value;
-      await saveBlockChanges(idx, { character_id: newChar }, false);
+      await saveBlockChanges(idx, { character_id: e.target.value }, false);
     });
   });
 
-  // Event Listeners: Troca de Emoção
   container.querySelectorAll(".block-emotion-select").forEach((sel) => {
     sel.addEventListener("change", async (e) => {
       const idx = parseInt(e.target.dataset.blockIndex);
-      const newEmotion = e.target.value;
-      await saveBlockChanges(idx, { emotion: newEmotion }, false);
+      await saveBlockChanges(idx, { emotion: e.target.value }, false);
     });
   });
 
-  // Event Listeners: Pausa
   container.querySelectorAll(".block-pause-input").forEach((inp) => {
     inp.addEventListener("change", async (e) => {
       const idx = parseInt(e.target.dataset.blockIndex);
@@ -684,20 +794,6 @@ function renderScriptTimeline() {
     });
   });
 
-  // Event Listeners: Botão Salvar Fala
-  container.querySelectorAll(".btn-save-block").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
-      const idx = parseInt(e.target.dataset.blockIndex);
-      const card = e.target.closest(".script-item");
-      const txt = card.querySelector(".block-text-input").value;
-      const pause = parseInt(card.querySelector(".block-pause-input").value) || 600;
-      const emo = card.querySelector(".block-emotion-select").value;
-      const char = card.querySelector(".block-char-select").value;
-      await saveBlockChanges(idx, { text: txt, pause_after_ms: pause, emotion: emo, character_id: char }, true);
-    });
-  });
-
-  // Event Listeners: Auto-Save no blur do textarea
   container.querySelectorAll(".block-text-input").forEach((txtArea) => {
     txtArea.addEventListener("blur", async (e) => {
       const idx = parseInt(e.target.dataset.blockIndex);
@@ -709,7 +805,16 @@ function renderScriptTimeline() {
   });
 }
 
-async function saveBlockChanges(blockIndex, payload, showSuccessToast = true) {
+function flashBlockSaveBadge(blockIndex) {
+  const badge = document.getElementById(`saveBadgeBlock_${blockIndex}`);
+  if (!badge) return;
+  badge.classList.add("visible");
+  setTimeout(() => {
+    badge.classList.remove("visible");
+  }, 2200);
+}
+
+async function saveBlockChanges(blockIndex, payload, showSuccessToast = false) {
   try {
     const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/script/1/blocks/${blockIndex}`, {
       method: "PUT",
@@ -722,12 +827,12 @@ async function saveBlockChanges(blockIndex, payload, showSuccessToast = true) {
       if (idx !== -1) {
         state.script.blocks[idx] = data.block;
       }
-      if (showSuccessToast) {
-        showToast(`Fala #${blockIndex} salva! (Cache invalidado para nova síntese)`, "success", 2800);
-      }
-      // Re-renderiza a timeline se mudou personagem ou emoção para atualizar tag de voz e atuação
       if (payload.character_id || payload.emotion) {
         renderScriptTimeline();
+      }
+      flashBlockSaveBadge(blockIndex);
+      if (showSuccessToast) {
+        showToast(`Fala #${blockIndex} atualizada (cache regenerado).`, "success", 2400);
       }
     } else {
       const err = await res.json().catch(() => ({}));
@@ -779,7 +884,7 @@ async function startRender(quickTest = false) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       const errMsg = err.detail || res.statusText || "Erro ao iniciar a renderização.";
-      progressText.textContent = `❌ ${errMsg}`;
+      progressText.textContent = `Erro: ${errMsg}`;
       showToast(`Erro na Renderização: ${errMsg}`, "error");
       btnQuick.disabled = false;
       btnFull.disabled = false;
@@ -790,7 +895,6 @@ async function startRender(quickTest = false) {
     const initData = await res.json();
     const totalBlocks = initData.total_blocks || 1;
 
-    // Polling a cada 1 segundo para acompanhar o status sem timeout HTTP
     const pollTimer = setInterval(async () => {
       try {
         const statusRes = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/render/status`);
@@ -801,12 +905,12 @@ async function startRender(quickTest = false) {
           const pct = Math.max(5, job.percent || Math.round((job.current_block / (job.total_blocks || totalBlocks)) * 90));
           progressFill.style.width = `${pct}%`;
           progressPct.textContent = `${pct}%`;
-          let txt = `🎙️ Sintetizando fala ${job.current_block} de ${job.total_blocks || totalBlocks}...`;
+          let txt = `Sintetizando fala ${job.current_block} de ${job.total_blocks || totalBlocks}...`;
           if (job.current_text) {
             txt += ` ("${job.current_text}...")`;
           }
           if (job.quota_exceeded) {
-            txt += ` ⚠️ (Cota Gemini: gravando com voz reserva)`;
+            txt += ` [Contingência ativa]`;
           }
           progressText.textContent = txt;
         } else if (job.status === "completed") {
@@ -822,14 +926,14 @@ async function startRender(quickTest = false) {
             const engineName = fallbackEngines.has("kokoro")
               ? "Kokoro Local (ONNX 100% Offline)"
               : "Edge-TTS Neural";
-            progressText.textContent = `⚠️ Concluído com voz de contingência (${engineName}).`;
+            progressText.textContent = `Concluído com voz de contingência (${engineName}).`;
             showToast(
-              `⚠️ Atenção à Cota do Google:\nSua cota diária do Gemini TTS foi atingida.\nAs falas restantes foram gravadas automaticamente na voz de contingência (${engineName}) para garantir a integridade do áudio.`,
+              `Atenção à Cota do Google:\nSua cota do Gemini TTS foi atingida.\nAs falas restantes foram gravadas automaticamente na voz de contingência (${engineName}) para garantir a integridade do áudio.`,
               "warning",
               7000
             );
           } else {
-            progressText.textContent = "🎉 Masterização concluída com sucesso!";
+            progressText.textContent = "Masterização concluída com sucesso!";
             showToast("Masterização concluída com sucesso!", "success");
           }
 
@@ -843,7 +947,7 @@ async function startRender(quickTest = false) {
           state.isRendering = false;
         } else if (job.status === "error") {
           clearInterval(pollTimer);
-          progressText.textContent = `❌ ${job.error || "Erro durante a síntese."}`;
+          progressText.textContent = `Erro: ${job.error || "Erro durante a síntese."}`;
           showToast(`Erro na Renderização: ${job.error || "Erro desconhecido"}`, "error");
           btnQuick.disabled = false;
           btnFull.disabled = false;
@@ -855,7 +959,7 @@ async function startRender(quickTest = false) {
     }, 1000);
 
   } catch (e) {
-    progressText.textContent = `❌ Falha de conexão: ${e.message || e}`;
+    progressText.textContent = `Falha de conexão: ${e.message || e}`;
     showToast(`Falha de conexão durante a renderização: ${e.message || e}`, "error");
     btnQuick.disabled = false;
     btnFull.disabled = false;
@@ -863,15 +967,99 @@ async function startRender(quickTest = false) {
   }
 }
 
+// ==============================================================================
+// PLAYER DE ÁUDIO 100% CUSTOMIZADO (DARK STUDIO PLAYER)
+// ==============================================================================
+function formatTime(seconds) {
+  if (!seconds || !isFinite(seconds) || seconds < 0) return "00:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function updatePlayPauseUI(isPlaying) {
+  const playSvg = document.getElementById("iconPlaySvg");
+  const pauseSvg = document.getElementById("iconPauseSvg");
+  const artwork = document.getElementById("playerArtwork");
+
+  if (playSvg) playSvg.classList.toggle("hidden", isPlaying);
+  if (pauseSvg) pauseSvg.classList.toggle("hidden", !isPlaying);
+  if (artwork) artwork.classList.toggle("playing", isPlaying);
+}
+
+function initCustomAudioPlayer() {
+  const audioEl = document.getElementById("mainAudioPlayer");
+  const playBtn = document.getElementById("btnPlayerPlayPause");
+  const seekInput = document.getElementById("playerSeekInput");
+  const scrubberFill = document.getElementById("playerScrubberFill");
+  const currTimeEl = document.getElementById("playerCurrentTime");
+  const totalTimeEl = document.getElementById("playerTotalTime");
+  const volSlider = document.getElementById("playerVolumeSlider");
+  const muteBtn = document.getElementById("btnPlayerMute");
+
+  if (!audioEl) return;
+
+  playBtn?.addEventListener("click", () => {
+    if (!audioEl.src) return;
+    if (audioEl.paused) {
+      audioEl.play().catch(() => {});
+    } else {
+      audioEl.pause();
+    }
+  });
+
+  audioEl.addEventListener("play", () => updatePlayPauseUI(true));
+  audioEl.addEventListener("pause", () => updatePlayPauseUI(false));
+  audioEl.addEventListener("ended", () => updatePlayPauseUI(false));
+
+  audioEl.addEventListener("loadedmetadata", () => {
+    if (totalTimeEl) totalTimeEl.textContent = formatTime(audioEl.duration);
+    if (seekInput) seekInput.disabled = false;
+    if (playBtn) playBtn.disabled = false;
+  });
+
+  audioEl.addEventListener("timeupdate", () => {
+    if (!audioEl.duration) return;
+    const pct = (audioEl.currentTime / audioEl.duration) * 100;
+    if (scrubberFill) scrubberFill.style.width = `${pct}%`;
+    if (seekInput) seekInput.value = Math.round((pct / 100) * 1000);
+    if (currTimeEl) currTimeEl.textContent = formatTime(audioEl.currentTime);
+  });
+
+  seekInput?.addEventListener("input", (e) => {
+    if (!audioEl.duration) return;
+    const ratio = parseFloat(e.target.value) / 1000;
+    audioEl.currentTime = ratio * audioEl.duration;
+    if (scrubberFill) scrubberFill.style.width = `${ratio * 100}%`;
+  });
+
+  volSlider?.addEventListener("input", (e) => {
+    const val = parseFloat(e.target.value);
+    audioEl.volume = val;
+    audioEl.muted = val === 0;
+  });
+
+  muteBtn?.addEventListener("click", () => {
+    audioEl.muted = !audioEl.muted;
+    if (volSlider) volSlider.value = audioEl.muted ? 0 : audioEl.volume;
+  });
+}
+
 function setupAudioPlayer(renderData, autoPlay = true) {
   const audioEl = document.getElementById("mainAudioPlayer");
   const titleEl = document.getElementById("playerTitle");
   const metaEl = document.getElementById("playerMeta");
   const downloadBtn = document.getElementById("btnDownloadAudio");
+  const playBtn = document.getElementById("btnPlayerPlayPause");
+  const seekInput = document.getElementById("playerSeekInput");
 
   const sep = renderData.audio_url.includes("?") ? "&" : "?";
   const fullAudioUrl = `${API_BASE}${renderData.audio_url}${sep}t=${Date.now()}`;
   audioEl.src = fullAudioUrl;
+
+  if (playBtn) playBtn.disabled = false;
+  if (seekInput) seekInput.disabled = false;
+
   if (autoPlay) {
     audioEl.play().catch(() => {});
   }
@@ -888,10 +1076,24 @@ function resetAudioPlayer() {
   const titleEl = document.getElementById("playerTitle");
   const metaEl = document.getElementById("playerMeta");
   const downloadBtn = document.getElementById("btnDownloadAudio");
+  const playBtn = document.getElementById("btnPlayerPlayPause");
+  const seekInput = document.getElementById("playerSeekInput");
+  const scrubberFill = document.getElementById("playerScrubberFill");
+  const currTimeEl = document.getElementById("playerCurrentTime");
+  const totalTimeEl = document.getElementById("playerTotalTime");
 
-  audioEl.src = "";
-  titleEl.textContent = "Nenhum áudio gerado";
-  metaEl.textContent = "Aguardando síntese";
+  audioEl.pause();
+  audioEl.removeAttribute("src");
+  updatePlayPauseUI(false);
+
+  if (playBtn) playBtn.disabled = true;
+  if (seekInput) { seekInput.value = 0; seekInput.disabled = true; }
+  if (scrubberFill) scrubberFill.style.width = "0%";
+  if (currTimeEl) currTimeEl.textContent = "00:00";
+  if (totalTimeEl) totalTimeEl.textContent = "00:00";
+
+  titleEl.textContent = "Nenhum áudio carregado";
+  metaEl.textContent = "Aguardando renderização";
 
   downloadBtn.href = "#";
   downloadBtn.classList.add("disabled");
@@ -911,21 +1113,21 @@ function renderAuditList(auditItems) {
     row.className = "audit-item";
 
     let badgeClass = "engine-edge";
-    let badgeText = "Edge-TTS";
+    let badgeText = "Edge Neural";
     if (item.actual_engine === "kokoro") {
       badgeClass = "engine-kokoro";
-      badgeText = "Kokoro HF";
+      badgeText = "Kokoro ONNX";
     } else if (item.actual_engine === "gemini") {
       badgeClass = "engine-gemini";
-      badgeText = "Gemini Acted";
+      badgeText = "Gemini 3.8";
     }
 
     const fallbackAlert = item.fallback_triggered
-      ? `<span class="badge badge-warning" title="${item.fallback_reason}">⚠️ Contingência</span>`
+      ? `<span class="badge badge-warning" title="${item.fallback_reason || ""}">Contingência</span>`
       : "";
 
     row.innerHTML = `
-      <span style="font-weight: 700; color: var(--text-muted)">#${item.index}</span>
+      <span style="font-weight: 700; color: var(--text-muted); font-family: var(--font-mono)">#${String(item.index).padStart(2, "0")}</span>
       <div><span class="engine-badge ${badgeClass}">${badgeText}</span> ${fallbackAlert}</div>
       <div style="font-weight: 600">[${item.character_id}]</div>
       <div style="color: var(--text-secondary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap">"${item.text}"</div>
@@ -948,6 +1150,10 @@ function initEventListeners() {
   document.getElementById("btnGoToStep2")?.addEventListener("click", () => setStep(2));
   document.getElementById("btnGoToStep3Top")?.addEventListener("click", () => setStep(3));
   document.getElementById("btnGoToStep3")?.addEventListener("click", () => setStep(3));
+
+  // Botões de Preset Rápido no Guia Vivo
+  document.getElementById("btnPresetLecture")?.addEventListener("click", () => applyProjectPreset("lecture"));
+  document.getElementById("btnPresetDrama")?.addEventListener("click", () => applyProjectPreset("drama"));
 
   // Botão Limpar Texto da Etapa 1
   document.getElementById("btnClearText")?.addEventListener("click", () => {
@@ -1023,11 +1229,13 @@ function initEventListeners() {
 
   quickMode?.addEventListener("change", async (e) => {
     if (!state.currentSlug) return;
+    const newMode = e.target.value;
+    updateContextGuideBar(newMode, state.currentStrategy);
     try {
       const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: e.target.value }),
+        body: JSON.stringify({ mode: newMode }),
       });
       if (res.ok) {
         showToast(`Modo alterado para ${e.target.options[e.target.selectedIndex].text}`, "success", 2500);
@@ -1042,11 +1250,13 @@ function initEventListeners() {
 
   quickStrategy?.addEventListener("change", async (e) => {
     if (!state.currentSlug) return;
+    const newStrat = e.target.value;
+    updateContextGuideBar(state.currentMode, newStrat);
     try {
       const res = await fetch(`${API_BASE}/api/projects/${state.currentSlug}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ engine_strategy: e.target.value }),
+        body: JSON.stringify({ engine_strategy: newStrat }),
       });
       if (res.ok) {
         showToast(`Estratégia alterada para ${e.target.options[e.target.selectedIndex].text}`, "success", 2500);
@@ -1059,7 +1269,7 @@ function initEventListeners() {
     }
   });
 
-  // Controles do Player de Estudo (⏪ -10s, ⏩ +10s, velocidades)
+  // Controles do Player de Estudo (-10s, +10s, velocidades)
   document.getElementById("btnPlayerBack10")?.addEventListener("click", () => {
     const p = document.getElementById("mainAudioPlayer");
     p.currentTime = Math.max(0, p.currentTime - 10);
