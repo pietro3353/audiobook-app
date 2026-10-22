@@ -167,6 +167,7 @@ class AudioMixer:
 
         # 6. União da fala com sua pausa
         bloco_final = segmento_normalizado + pausa_ambiente
+        self._last_duration_ms = int(len(bloco_final))
 
         # 7. Exportação em MP3 padrão 192k
         output_normalized_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +236,158 @@ class AudioMixer:
 
         return output_path
 
+    @staticmethod
+    def _format_srt_timestamp(ms: int) -> str:
+        """Formata milissegundos no padrão SubRip (HH:MM:SS,mmm)."""
+        ms = max(0, int(ms))
+        horas = ms // 3_600_000
+        resto = ms % 3_600_000
+        minutos = resto // 60_000
+        resto %= 60_000
+        segundos = resto // 1000
+        milis = resto % 1000
+        return f"{horas:02d}:{minutos:02d}:{segundos:02d},{milis:03d}"
+
+    @staticmethod
+    def _format_vtt_timestamp(ms: int) -> str:
+        """Formata milissegundos no padrão WebVTT (HH:MM:SS.mmm)."""
+        return AudioMixer._format_srt_timestamp(ms).replace(",", ".")
+
+    @staticmethod
+    def _escape_ffmetadata(val: str) -> str:
+        """Escapa caracteres reservados do formato FFMETADATA1 (=, ;, #, \\ e quebras de linha)."""
+        if not val:
+            return ""
+        s = val.replace("\\", "\\\\").replace("\r", " ").replace("\n", " ")
+        for ch in ("=", ";", "#"):
+            s = s.replace(ch, f"\\{ch}")
+        return s.strip()
+
+    def export_subtitles(
+        self,
+        script: ChapterScript,
+        output_srt_path: Path,
+        output_vtt_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Gera arquivos de legenda sincronizada (.srt e .vtt) a partir dos timestamps
+        exatos (start_ms e end_ms) de cada bloco do roteiro.
+        """
+        output_srt_path = Path(output_srt_path)
+        output_srt_path.parent.mkdir(parents=True, exist_ok=True)
+
+        srt_entries: List[str] = []
+        vtt_entries: List[str] = ["WEBVTT", ""]
+
+        cursor_fallback = 0
+        for cue_idx, b in enumerate(script.blocks, start=1):
+            start_ms = b.start_ms if b.start_ms is not None else cursor_fallback
+            dur_ms = b.duration_ms if b.duration_ms is not None else max(1000, b.pause_after_ms + 1500)
+            end_ms = b.end_ms if b.end_ms is not None else (start_ms + dur_ms)
+            cursor_fallback = end_ms
+
+            texto_legenda = (b.text or "").strip()
+            if not texto_legenda:
+                continue
+
+            srt_entries.append(
+                f"{cue_idx}\n"
+                f"{self._format_srt_timestamp(start_ms)} --> {self._format_srt_timestamp(end_ms)}\n"
+                f"{texto_legenda}\n"
+            )
+            vtt_entries.append(
+                f"{cue_idx}\n"
+                f"{self._format_vtt_timestamp(start_ms)} --> {self._format_vtt_timestamp(end_ms)}\n"
+                f"{texto_legenda}\n"
+            )
+
+        with open(output_srt_path, "w", encoding="utf-8") as f_srt:
+            f_srt.write("\n".join(srt_entries).strip() + "\n")
+
+        if output_vtt_path is not None:
+            output_vtt_path = Path(output_vtt_path)
+            output_vtt_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_vtt_path, "w", encoding="utf-8") as f_vtt:
+                f_vtt.write("\n".join(vtt_entries).strip() + "\n")
+
+        return output_srt_path
+
+    def export_m4b_audiobook(
+        self,
+        mp3_path: Path,
+        script: ChapterScript,
+        output_m4b_path: Path,
+    ) -> Optional[Path]:
+        """
+        Exporta o audiolivro no formato .M4B (AAC 128k) com capítulos clicáveis
+        embutidos via manifesto FFMETADATA1 a partir de start_ms e end_ms de cada fala.
+        """
+        mp3_path = Path(mp3_path)
+        output_m4b_path = Path(output_m4b_path)
+        if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+            return None
+
+        output_m4b_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path = output_m4b_path.parent / f"_ffmetadata_{output_m4b_path.stem}.txt"
+
+        try:
+            titulo_obra = script.title or f"Capítulo {script.chapter_number:02d}"
+            linhas_meta = [
+                ";FFMETADATA1",
+                f"title={self._escape_ffmetadata(titulo_obra)}",
+                "artist=AudioBook Studio PRO",
+                "",
+            ]
+
+            cursor_fallback = 0
+            for b in script.blocks:
+                start_ms = b.start_ms if b.start_ms is not None else cursor_fallback
+                dur_ms = b.duration_ms if b.duration_ms is not None else 1500
+                end_ms = b.end_ms if b.end_ms is not None else (start_ms + dur_ms)
+                cursor_fallback = end_ms
+
+                trecho = (b.text or "").strip().replace("\n", " ")
+                resumo_fala = f"{trecho[:50]}..." if len(trecho) > 50 else trecho
+                titulo_cap = f"Fala #{b.index + 1}: {resumo_fala}"
+
+                linhas_meta.extend([
+                    "[CHAPTER]",
+                    "TIMEBASE=1/1000",
+                    f"START={int(start_ms)}",
+                    f"END={int(end_ms)}",
+                    f"title={self._escape_ffmetadata(titulo_cap)}",
+                    "",
+                ])
+
+            with open(meta_path, "w", encoding="utf-8") as f_meta:
+                f_meta.write("\n".join(linhas_meta))
+
+            cmd_m4b = [
+                self.ffmpeg_path,
+                "-y",
+                "-i", str(mp3_path),
+                "-i", str(meta_path),
+                "-map_metadata", "1",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(output_m4b_path),
+            ]
+            res = subprocess.run(cmd_m4b, capture_output=True, text=True)
+            if res.returncode == 0 and output_m4b_path.exists() and output_m4b_path.stat().st_size > 0:
+                return output_m4b_path
+            print(f"[AudioMixer] Aviso ao gerar .M4B: {res.stderr[:160]}")
+            return None
+        except Exception as e:
+            print(f"[AudioMixer] Aviso: exportação .M4B ignorada ({e}).")
+            return None
+        finally:
+            if meta_path.exists():
+                try:
+                    meta_path.unlink()
+                except Exception:
+                    pass
+
     def mix_chapter(
         self,
         script: ChapterScript,
@@ -245,7 +398,8 @@ class AudioMixer:
         enable_room_tone: bool = True,
     ) -> Path:
         """
-        Masteriza todas as falas de um capítulo com suas pausas e gera o MP3 final do capítulo.
+        Masteriza todas as falas de um capítulo com suas pausas, rastreia timestamps
+        exatos por bloco e exporta MP3, legendas (.SRT/.VTT) e audiolivro (.M4B).
         """
         if len(raw_chunks) != len(script.blocks):
             raise ValueError(
@@ -256,11 +410,13 @@ class AudioMixer:
         base_temp.mkdir(parents=True, exist_ok=True)
 
         blocos_normalizados: List[Path] = []
+        cursor_ms = 0
 
         for i, (bloco, raw_chunk) in enumerate(zip(script.blocks, raw_chunks)):
             norm_path = base_temp / f"norm_{i:04d}.mp3"
             motor_efetivo = getattr(bloco, "actual_engine", None) or bloco.engine
             is_kokoro = (motor_efetivo == "kokoro")
+            self._last_duration_ms = 0
             self.normalize_and_add_pause(
                 raw_audio_path=raw_chunk,
                 pause_after_ms=bloco.pause_after_ms,
@@ -270,10 +426,33 @@ class AudioMixer:
                 enable_room_tone=enable_room_tone,
                 volume=getattr(bloco, "volume", None),
             )
+            dur_ms = int(getattr(self, "_last_duration_ms", 0))
+            if dur_ms <= 0 and norm_path.exists():
+                try:
+                    dur_ms = int(len(AudioSegment.from_file(str(norm_path))))
+                except Exception:
+                    dur_ms = max(500, bloco.pause_after_ms)
+
+            bloco.start_ms = cursor_ms
+            bloco.duration_ms = dur_ms
+            bloco.end_ms = cursor_ms + dur_ms
+            cursor_ms += dur_ms
+
             blocos_normalizados.append(norm_path)
 
-        # Montagem final do capítulo
+        # Montagem final do capítulo em MP3
         self.concat_audio_files(blocos_normalizados, output_chapter_mp3)
+
+        # Exporta legendas sincronizadas (.SRT e .VTT) e audiolivro .M4B com capítulos
+        srt_path = output_chapter_mp3.with_suffix(".srt")
+        vtt_path = output_chapter_mp3.with_suffix(".vtt")
+        m4b_path = output_chapter_mp3.with_suffix(".m4b")
+        try:
+            self.export_subtitles(script, srt_path, vtt_path)
+        except Exception as e_sub:
+            print(f"[AudioMixer] Aviso ao exportar legendas: {e_sub}")
+
+        self.export_m4b_audiobook(output_chapter_mp3, script, m4b_path)
 
         return output_chapter_mp3
 

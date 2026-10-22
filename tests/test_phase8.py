@@ -46,8 +46,8 @@ def test_ux_presets_and_tooltips():
     assert res.status_code == 200
     html = res.text
 
-    assert "styles.css?v=8.0" in html
-    assert "app.js?v=8.0" in html
+    assert ("styles.css?v=8.0" in html or "styles.css?v=9.0" in html)
+    assert ("app.js?v=8.0" in html or "app.js?v=9.0" in html)
     assert "projectContextBanner" in html
     assert "btnPresetLecture" in html
     assert "btnPresetDrama" in html

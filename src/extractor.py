@@ -165,12 +165,62 @@ def get_pdf_page_count(file_input: Any) -> int:
         raise ValueError(f"Falha ao ler o PDF: {e}")
 
 
+def _linearize_table_rows(rows: List[List[Any]]) -> List[str]:
+    """
+    Converte matriz de células de uma tabela PDF em frases estruturadas para leitura em voz alta.
+    Exemplo: 'Item da tabela — Papel: Cientista de Dados; Foco Principal: Criação de modelos.'
+    """
+    if not rows or len(rows) < 2:
+        return []
+
+    # Limpa quebras de linha internas das células
+    cleaned_rows: List[List[str]] = []
+    for row in rows:
+        if not row:
+            continue
+        cleaned_row = [
+            re.sub(r"\s+", " ", str(cell or "")).strip()
+            for cell in row
+        ]
+        if any(cleaned_row):
+            cleaned_rows.append(cleaned_row)
+
+    if len(cleaned_rows) < 2 or len(cleaned_rows[0]) < 2:
+        return []
+
+    headers = cleaned_rows[0]
+    frases_tabela: List[str] = []
+
+    for row in cleaned_rows[1:]:
+        pares: List[str] = []
+        for col_idx, valor in enumerate(row):
+            if not valor:
+                continue
+            cabecalho = headers[col_idx] if col_idx < len(headers) else ""
+            if cabecalho and cabecalho.lower() != valor.lower():
+                pares.append(f"{cabecalho}: {valor}")
+            else:
+                pares.append(valor)
+        if pares:
+            corpo = "; ".join(pares).rstrip(".")
+            frases_tabela.append(f"Item da tabela — {corpo}.")
+
+    return frases_tabela
+
+
+def _bbox_overlaps(b1: Tuple[float, float, float, float], b2: Tuple[float, float, float, float]) -> bool:
+    """Verifica se o centro do bloco b1 está contido ou sobrepõe significativamente a tabela b2."""
+    cx = (b1[0] + b1[2]) / 2.0
+    cy = (b1[1] + b1[3]) / 2.0
+    return (b2[0] - 2 <= cx <= b2[2] + 2) and (b2[1] - 2 <= cy <= b2[3] + 2)
+
+
 def extract_from_pdf(
     file_input: Any,
     start_page: int = 1,
     end_page: Optional[int] = None,
 ) -> str:
-    """Extrai texto de arquivo PDF ou buffer de bytes com suporte a intervalo de páginas."""
+    """Extrai texto de arquivo PDF ou buffer de bytes com suporte a intervalo de páginas e leitura inteligente de tabelas."""
     import fitz  # PyMuPDF
 
     try:
@@ -198,7 +248,62 @@ def extract_from_pdf(
     paginas = []
     for num_pag in range(inicio, fim):
         pagina = doc[num_pag]
-        txt = pagina.get_text("text")
+
+        # 1. Tenta detectar tabelas estruturadas na página
+        tabelas_validas: List[Tuple[Optional[Tuple[float, float, float, float]], str]] = []
+        if hasattr(pagina, "find_tables"):
+            try:
+                finder = pagina.find_tables()
+                lista_tab = getattr(finder, "tables", finder) or []
+                for tab in lista_tab:
+                    rows = tab.extract() if hasattr(tab, "extract") else []
+                    frases = _linearize_table_rows(rows)
+                    if frases:
+                        bbox = tuple(tab.bbox) if hasattr(tab, "bbox") and tab.bbox else None
+                        tabelas_validas.append((bbox, "\n\n".join(frases)))
+            except Exception:
+                tabelas_validas = []
+
+        if tabelas_validas:
+            # Reconstrói o texto da página substituindo os blocos das tabelas pela versão linearizada
+            blocos_pag = pagina.get_text("blocks") if hasattr(pagina, "get_text") else []
+            if isinstance(blocos_pag, list) and blocos_pag and all(isinstance(b, (tuple, list)) and len(b) >= 5 for b in blocos_pag):
+                partes_pagina: List[str] = []
+                tabelas_inseridas = set()
+                for b in blocos_pag:
+                    if len(b) >= 7 and b[6] != 0:
+                        continue
+                    b_rect = (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                    b_txt = str(b[4]).strip()
+                    if not b_txt:
+                        continue
+
+                    idx_tab_match = None
+                    for t_idx, (t_bbox, _) in enumerate(tabelas_validas):
+                        if t_bbox and _bbox_overlaps(b_rect, t_bbox):
+                            idx_tab_match = t_idx
+                            break
+
+                    if idx_tab_match is not None:
+                        if idx_tab_match not in tabelas_inseridas:
+                            partes_pagina.append(tabelas_validas[idx_tab_match][1])
+                            tabelas_inseridas.add(idx_tab_match)
+                    else:
+                        partes_pagina.append(b_txt)
+
+                # Garante que qualquer tabela sem match de bbox também seja incluída
+                for t_idx, (_, t_texto) in enumerate(tabelas_validas):
+                    if t_idx not in tabelas_inseridas:
+                        partes_pagina.append(t_texto)
+
+                txt = "\n\n".join(partes_pagina)
+            else:
+                txt_base = pagina.get_text("text").strip()
+                txt_tabs = "\n\n".join(t_texto for _, t_texto in tabelas_validas)
+                txt = f"{txt_base}\n\n{txt_tabs}".strip() if txt_base else txt_tabs
+        else:
+            txt = pagina.get_text("text")
+
         if txt.strip():
             paginas.append(txt)
     doc.close()

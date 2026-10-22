@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import edge_tts
 from src.emotions import get_tts_style_prefix
 from src.models import ChapterScript, SpeechBlock
+from src.phonetics import normalize_phonetics_ptbr
 from src.voices import (
     VOICE_CATALOG,
     VoiceProfile,
@@ -95,7 +96,84 @@ def clean_tts_text(text: str) -> str:
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\s+([,;:!?])", r"\1", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
+
+    # Normalização fonética PT-BR (siglas tech, símbolos matemáticos e algarismos romanos)
+    t = normalize_phonetics_ptbr(t)
     return t.strip()
+
+
+def split_into_phonetic_sentences(text: str, max_chars: int = 350) -> List[str]:
+    """
+    Divide textos longos em sub-sentenças de até ~350 caracteres respeitando
+    pontuações fortes ('. ', '! ', '? ', '; ', ': ', '\\n'), evitando achatamento
+    de entonação ou aceleração na janela de ~510 tokens fonéticos do Kokoro-ONNX.
+    """
+    if not text:
+        return []
+    texto = text.strip()
+    if len(texto) <= max_chars:
+        return [texto]
+
+    # Divide preservando a pontuação forte no final de cada segmento
+    partes_brutas = re.split(r"(?<=[.!?;:])\s+|\n+", texto)
+    sentencas_atomicas: List[str] = []
+
+    for parte in partes_brutas:
+        p = parte.strip()
+        if not p:
+            continue
+        if len(p) <= max_chars:
+            sentencas_atomicas.append(p)
+        else:
+            # Sub-divide em vírgulas se uma única oração ultrapassar max_chars
+            sub_virgulas = re.split(r"(?<=,)\s+", p)
+            buf_v = ""
+            for sv in sub_virgulas:
+                sv = sv.strip()
+                if not sv:
+                    continue
+                if len(sv) > max_chars:
+                    if buf_v:
+                        sentencas_atomicas.append(buf_v)
+                        buf_v = ""
+                    palavras = sv.split()
+                    chunk_p = ""
+                    for w in palavras:
+                        if not chunk_p:
+                            chunk_p = w
+                        elif len(chunk_p) + 1 + len(w) <= max_chars:
+                            chunk_p = f"{chunk_p} {w}"
+                        else:
+                            sentencas_atomicas.append(chunk_p)
+                            chunk_p = w
+                    if chunk_p:
+                        sentencas_atomicas.append(chunk_p)
+                elif not buf_v:
+                    buf_v = sv
+                elif len(buf_v) + 1 + len(sv) <= max_chars:
+                    buf_v = f"{buf_v} {sv}"
+                else:
+                    sentencas_atomicas.append(buf_v)
+                    buf_v = sv
+            if buf_v:
+                sentencas_atomicas.append(buf_v)
+
+    # Agrupa sentenças adjacentes sem ultrapassar max_chars
+    resultado: List[str] = []
+    atual = ""
+    for s in sentencas_atomicas:
+        if not atual:
+            atual = s
+        elif len(atual) + 1 + len(s) <= max_chars:
+            atual = f"{atual} {s}"
+        else:
+            resultado.append(atual)
+            atual = s
+
+    if atual:
+        resultado.append(atual)
+
+    return resultado
 
 
 def parse_rate_to_speed(rate: Optional[str]) -> float:
@@ -226,14 +304,15 @@ class Synthesizer:
         acting_prompt: Optional[str] = None,
         output_path: Optional[Path] = None,
         emotion: Optional[str] = None,
+        speech_type: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Gera áudio com o Gemini TTS.
 
-        IMPORTANTE: o campo `contents` recebe SOMENTE o texto limpo. Para emoções dramáticas,
-        recebe no máximo um prefixo curto de estilo ("Say sadly: <texto>"). Instruções longas
-        (como `acting_prompt`) nunca são enviadas, pois o modelo as lê em voz alta e o timbre oscila.
-        O parâmetro `acting_prompt` é mantido apenas por compatibilidade de assinatura.
+        IMPORTANTE: o campo `contents` recebe SOMENTE o texto limpo. Para emoções dramáticas
+        em diálogos, recebe no máximo um prefixo curto de estilo ("Say sadly: <texto>").
+        Quando `speech_type in ("narracao", "destaque", "citacao")` ou quando a emoção é
+        neutra/didática, nenhum prefixo em inglês é injetado.
         """
         if not self.gemini_api_key or self.gemini_api_key == "sua_chave_api_aqui":
             return False, "Chave da API do Gemini não configurada."
@@ -245,7 +324,16 @@ class Synthesizer:
         if not texto_limpo:
             return False, "Texto vazio após higienização."
 
-        prefixo = get_tts_style_prefix(emotion)
+        # Blindagem Modo Aula/Resumo e Narração: nunca injeta prefixo em inglês fora de diálogos/pensamentos dramáticos
+        if speech_type in ("narracao", "destaque", "citacao") or (emotion or "neutro").strip().lower() in (
+            "neutro",
+            "destaque_didatico",
+            "pensamento",
+        ):
+            prefixo = None
+        else:
+            prefixo = get_tts_style_prefix(emotion)
+
         conteudo = f"{prefixo}: {texto_limpo}" if prefixo else texto_limpo
 
         # Resolve o nome da voz pré-construída do Gemini
@@ -378,7 +466,7 @@ class Synthesizer:
         output_path: Path = None,
         rate: Optional[str] = None,
     ) -> bool:
-        """Gera áudio usando Kokoro-ONNX local (velocidade do bloco + exportação MP3 real)."""
+        """Gera áudio usando Kokoro-ONNX local com sub-chunking fonético (~350 chars) e pausa orgânica de 120ms."""
         kokoro = self._get_kokoro_model()
         if not kokoro:
             return False
@@ -391,19 +479,38 @@ class Synthesizer:
             if not texto_limpo:
                 return False
 
+            sub_sentencas = split_into_phonetic_sentences(texto_limpo, max_chars=350)
+            if not sub_sentencas:
+                return False
+
             estilo_final = self._resolve_kokoro_style(kokoro, voice_style, blend_recipe)
             speed = parse_rate_to_speed(rate)
 
-            async with self.kokoro_semaphore:
-                samples, sample_rate = await asyncio.to_thread(
-                    kokoro.create,
-                    texto_limpo,
-                    voice=estilo_final,
-                    speed=speed,
-                    lang="pt-br",
-                )
+            partes_audio = []
+            sample_rate = 24000
 
-            pcm = (np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0) * 32767).astype(np.int16)
+            async with self.kokoro_semaphore:
+                for idx_s, sentenca in enumerate(sub_sentencas):
+                    samples, sr = await asyncio.to_thread(
+                        kokoro.create,
+                        sentenca,
+                        voice=estilo_final,
+                        speed=speed,
+                        lang="pt-br",
+                    )
+                    sample_rate = int(sr)
+                    arr = np.asarray(samples, dtype=np.float32)
+                    if arr.size > 0:
+                        if partes_audio:
+                            pausa_120ms = np.zeros(int(sample_rate * 0.12), dtype=np.float32)
+                            partes_audio.append(pausa_120ms)
+                        partes_audio.append(arr)
+
+            if not partes_audio:
+                return False
+
+            samples_unificados = np.concatenate(partes_audio) if len(partes_audio) > 1 else partes_audio[0]
+            pcm = (np.clip(samples_unificados, -1.0, 1.0) * 32767).astype(np.int16)
             seg = AudioSegment(pcm.tobytes(), frame_rate=int(sample_rate), sample_width=2, channels=1)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             seg.export(str(output_path), format="mp3", bitrate="192k")
@@ -463,6 +570,7 @@ class Synthesizer:
                 acting_prompt=block.acting_prompt,
                 output_path=output_path,
                 emotion=block.emotion,
+                speech_type=block.speech_type,
             )
         if engine == "kokoro":
             prim = voice_id == block.voice_id

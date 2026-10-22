@@ -201,7 +201,7 @@ def test_express_mode_deterministic():
 
     pm = ProjectManager()
     slug_teste = "projeto_express_test"
-    pm.create_project(slug=slug_teste, title="Resumo Express", mode="summary")
+    pm.create_project(slug=slug_teste, title="Cena Express", mode="fiction")
 
     director = Director(project_manager=pm)
 

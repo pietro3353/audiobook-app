@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="styles.css?v=8.0">
+  <link rel="stylesheet" href="styles.css?v=9.0">
 </head>
 <body class="dark-theme">
   <!-- CABEÇALHO SUPERIOR -->
@@ -435,10 +435,20 @@
         <input type="range" id="playerVolumeSlider" class="volume-slider" min="0" max="1" step="0.02" value="1" aria-label="Volume">
       </div>
 
-      <a id="btnDownloadAudio" class="btn btn-secondary btn-sm disabled" href="#" download>
-        <i data-lucide="download" class="icon-xs"></i>
-        <span>MP3</span>
-      </a>
+      <div class="player-downloads-group">
+        <a id="btnDownloadAudio" class="btn btn-secondary btn-sm disabled" href="#" download title="Baixar Áudio Masterizado (.MP3)">
+          <i data-lucide="download" class="icon-xs"></i>
+          <span>MP3</span>
+        </a>
+        <a id="btnDownloadM4b" class="btn btn-secondary btn-sm disabled" href="#" download title="Baixar Audiolivro com Capítulos (.M4B)">
+          <i data-lucide="book-open" class="icon-xs"></i>
+          <span>M4B</span>
+        </a>
+        <a id="btnDownloadSrt" class="btn btn-secondary btn-sm disabled" href="#" download title="Baixar Legendas Sincronizadas (.SRT)">
+          <i data-lucide="subtitles" class="icon-xs"></i>
+          <span>SRT</span>
+        </a>
+      </div>
     </div>
   </footer>
 
@@ -555,6 +565,6 @@
   <!-- CONTAINER DE NOTIFICAÇÕES TOAST -->
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
-  <script src="app.js?v=8.0"></script>
+  <script src="app.js?v=9.0"></script>
 </body>
 </html>

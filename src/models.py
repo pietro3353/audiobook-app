@@ -191,6 +191,20 @@ class SpeechBlock(BaseModel):
         description="Motivo da ativação do fallback (ex: 'chave ausente', 'cota esgotada')",
     )
 
+    # Timestamps Exatos no Áudio Masterizado (Karaoke Sync, .SRT e Capítulos .M4B)
+    start_ms: Optional[int] = Field(
+        default=None,
+        description="Início exato do bloco no áudio final em ms",
+    )
+    end_ms: Optional[int] = Field(
+        default=None,
+        description="Fim exato do bloco no áudio final em ms",
+    )
+    duration_ms: Optional[int] = Field(
+        default=None,
+        description="Duração total do bloco + pausa em ms",
+    )
+
 
 class ChapterScript(BaseModel):
     """Roteiro completo de um capítulo estruturado em falas sequenciais."""

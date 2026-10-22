@@ -282,10 +282,17 @@ def get_project_audio_info(slug: str):
 
     script = pm.load_chapter_script(slug, 1)
     blocks_count = len(script.blocks) if script and script.blocks else 0
-    
+
+    srt_file = alvo.with_suffix(".srt")
+    vtt_file = alvo.with_suffix(".vtt")
+    m4b_file = alvo.with_suffix(".m4b")
+
     return {
         "has_audio": True,
         "audio_url": f"/api/audio/projects/{slug}/{alvo.name}",
+        "srt_url": f"/api/audio/projects/{slug}/{srt_file.name}" if srt_file.exists() else None,
+        "vtt_url": f"/api/audio/projects/{slug}/{vtt_file.name}" if vtt_file.exists() else None,
+        "m4b_url": f"/api/audio/projects/{slug}/{m4b_file.name}" if m4b_file.exists() else None,
         "filename": alvo.name,
         "size_kb": round(alvo.stat().st_size / 1024, 1),
         "blocks_count": blocks_count,
@@ -571,13 +578,12 @@ def direct_scene(slug: str, req: DirectChapterRequest):
             fuse_speeches=req.fuse_speeches,
             max_chars_per_speech=req.max_chars_per_speech,
         )
-        # Remove áudios renderizados antigos deste capítulo para não tocar áudio de texto anterior
-        out_cap = pm.get_project_dir(slug) / "output" / f"cap_{req.chapter_number:02d}.mp3"
-        out_demo = pm.get_project_dir(slug) / "output" / "demo_teste_3_falas.mp3"
-        if out_cap.exists():
-            out_cap.unlink(missing_ok=True)
-        if out_demo.exists():
-            out_demo.unlink(missing_ok=True)
+        # Remove áudios e artefatos renderizados antigos deste capítulo para não tocar áudio de texto anterior
+        for base_stem in (f"cap_{req.chapter_number:02d}", "demo_teste_3_falas"):
+            for ext in (".mp3", ".srt", ".vtt", ".m4b"):
+                arq_old = pm.get_project_dir(slug) / "output" / f"{base_stem}{ext}"
+                if arq_old.exists():
+                    arq_old.unlink(missing_ok=True)
 
         bible = pm.load_character_bible(slug)
         return {
@@ -599,7 +605,7 @@ RENDER_JOBS: Dict[str, dict] = {}
 
 
 def _sync_audit_blocks(subscript: ChapterScript, script_original: ChapterScript) -> None:
-    """Sincroniza os atributos de auditoria e contingência de volta para o script persistido."""
+    """Sincroniza os atributos de auditoria, contingência e timestamps de volta para o script persistido."""
     sub_map = {b.index: b for b in subscript.blocks}
     for orig_b in script_original.blocks:
         if orig_b.index in sub_map:
@@ -608,6 +614,9 @@ def _sync_audit_blocks(subscript: ChapterScript, script_original: ChapterScript)
             orig_b.actual_voice_id = sb.actual_voice_id
             orig_b.fallback_triggered = sb.fallback_triggered
             orig_b.fallback_reason = sb.fallback_reason
+            orig_b.start_ms = sb.start_ms
+            orig_b.end_ms = sb.end_ms
+            orig_b.duration_ms = sb.duration_ms
 
 
 async def _run_render_job(
@@ -664,15 +673,24 @@ async def _run_render_job(
                 "actual_voice_id": b.actual_voice_id or b.voice_id,
                 "fallback_triggered": b.fallback_triggered,
                 "fallback_reason": b.fallback_reason,
+                "start_ms": b.start_ms,
+                "end_ms": b.end_ms,
+                "duration_ms": b.duration_ms,
                 "text": b.text,
             })
 
         tamanho_kb = round(saida_final.stat().st_size / 1024, 1)
+        srt_file = saida_final.with_suffix(".srt")
+        vtt_file = saida_final.with_suffix(".vtt")
+        m4b_file = saida_final.with_suffix(".m4b")
 
         result_payload = {
             "success": True,
             "has_audio": True,
             "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
+            "srt_url": f"/api/audio/projects/{slug}/{srt_file.name}" if srt_file.exists() else None,
+            "vtt_url": f"/api/audio/projects/{slug}/{vtt_file.name}" if vtt_file.exists() else None,
+            "m4b_url": f"/api/audio/projects/{slug}/{m4b_file.name}" if m4b_file.exists() else None,
             "filename": saida_final.name,
             "size_kb": tamanho_kb,
             "blocks_count": len(subscript.blocks),
@@ -793,15 +811,24 @@ async def render_audio(slug: str, req: RenderChapterRequest):
                 "actual_voice_id": b.actual_voice_id or b.voice_id,
                 "fallback_triggered": b.fallback_triggered,
                 "fallback_reason": b.fallback_reason,
+                "start_ms": b.start_ms,
+                "end_ms": b.end_ms,
+                "duration_ms": b.duration_ms,
                 "text": b.text,
             })
 
         tamanho_kb = round(saida_final.stat().st_size / 1024, 1)
+        srt_file = saida_final.with_suffix(".srt")
+        vtt_file = saida_final.with_suffix(".vtt")
+        m4b_file = saida_final.with_suffix(".m4b")
 
         return {
             "success": True,
             "has_audio": True,
             "audio_url": f"/api/audio/projects/{slug}/{saida_final.name}",
+            "srt_url": f"/api/audio/projects/{slug}/{srt_file.name}" if srt_file.exists() else None,
+            "vtt_url": f"/api/audio/projects/{slug}/{vtt_file.name}" if vtt_file.exists() else None,
+            "m4b_url": f"/api/audio/projects/{slug}/{m4b_file.name}" if m4b_file.exists() else None,
             "filename": saida_final.name,
             "size_kb": tamanho_kb,
             "blocks_count": len(subscript.blocks),
@@ -819,11 +846,19 @@ async def render_audio(slug: str, req: RenderChapterRequest):
 
 @app.get("/api/audio/projects/{slug}/{filename}")
 def stream_project_audio(slug: str, filename: str):
-    """Transmite o arquivo MP3 masterizado de um projeto."""
+    """Transmite o arquivo masterizado (.mp3, .m4b, .srt ou .vtt) de um projeto."""
     arq = pm.get_project_dir(slug) / "output" / filename
     if not arq.exists():
-        raise HTTPException(status_code=404, detail="Arquivo de áudio não encontrado.")
-    return FileResponse(path=str(arq), media_type="audio/mpeg", filename=filename)
+        raise HTTPException(status_code=404, detail="Arquivo de áudio ou legenda não encontrado.")
+    ext = arq.suffix.lower()
+    media_map = {
+        ".mp3": "audio/mpeg",
+        ".m4b": "audio/mp4",
+        ".srt": "application/x-subrip; charset=utf-8",
+        ".vtt": "text/vtt; charset=utf-8",
+    }
+    media_type = media_map.get(ext, "application/octet-stream")
+    return FileResponse(path=str(arq), media_type=media_type, filename=filename)
 
 
 @app.get("/api/audio/sample/{filename}")

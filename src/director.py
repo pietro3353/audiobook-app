@@ -450,26 +450,31 @@ class Director:
         if not narrador:
             narrador = self.pm.smart_cast(project_slug, "Narrador", gender="M")
 
+        is_single_voice = metadata.mode in ("summary", "non_fiction")
         paragrafos = [p.strip() for p in chunk_text.split("\n\n") if p.strip()]
         blocos: List[SpeechBlock] = []
 
         for i, p in enumerate(paragrafos):
             idx = start_index + i
-            eh_dialogo = p.startswith(("-", "—", "–"))
+            inicia_com_travessao = p.startswith(("-", "—", "–"))
+            eh_dialogo = inicia_com_travessao and not is_single_voice
 
-            # Determina tipo e pausa
-            if eh_dialogo:
-                tipo: SpeechType = "dialogo"
+            # Determina tipo e pausa (em Modo Aula/Resumo, tópicos com '-' ou '—' são destaques didáticos, nunca diálogos tensos)
+            if is_single_voice and inicia_com_travessao:
+                tipo: SpeechType = "destaque"
+                emocao = "destaque_didatico"
+            elif eh_dialogo:
+                tipo = "dialogo"
                 emocao = "tenso" if ("!" in p or "?" in p) else "neutro"
             elif any(q in p for q in ('"', "“", "”", "«", "»")):
                 tipo = "citacao"
-                emocao = "destaque_didatico" if metadata.mode == "non_fiction" else "neutro"
+                emocao = "destaque_didatico" if is_single_voice else "neutro"
             else:
                 tipo = "narracao"
                 emocao = "destaque_didatico" if metadata.mode == "non_fiction" else "neutro"
 
             text_tts = p
-            if p.startswith("—") or p.startswith("-"):
+            if eh_dialogo and (p.startswith("—") or p.startswith("-")):
                 text_tts = p.replace("—", "— ... ", 1).replace("-", "— ... ", 1)
 
             bloco = self.pm.create_speech_block(

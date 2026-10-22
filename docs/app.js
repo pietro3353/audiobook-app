@@ -1,5 +1,5 @@
 /**
- * AUDIOBOOK STUDIO PRO — FRONTEND APPLICATION (SPA) - v8.0
+ * AUDIOBOOK STUDIO PRO — FRONTEND APPLICATION (SPA) - v9.0
  * Conecta-se à API FastAPI para extração, direção (gemini-3.5-flash-lite)
  * e síntese multi-motor (gemini-3.8-flash-lite-tts, Kokoro ONNX e Edge-TTS).
  */
@@ -18,6 +18,7 @@ const state = {
   activeStep: 1,
   selectedFile: null,
   isRendering: false,
+  activeSpeakingBlockIndex: null,
 };
 
 function refreshIcons() {
@@ -742,6 +743,14 @@ function renderScriptTimeline() {
       : "";
 
     const estimatedRows = Math.max(2, Math.min(6, Math.ceil((b.text || "").length / 110)));
+    const hasStartMs = b.start_ms !== null && b.start_ms !== undefined;
+    const seekTimeLabel = hasStartMs ? formatTime(b.start_ms / 1000) : "";
+    const seekBtnHtml = hasStartMs
+      ? `<button class="btn-seek-block" data-block-index="${b.index}" data-start-ms="${b.start_ms}" type="button" title="Ouvir a partir desta fala (${seekTimeLabel})">
+           <i data-lucide="play" class="icon-xs"></i>
+           <span>Ouvir daqui (${seekTimeLabel})</span>
+         </button>`
+      : "";
 
     item.innerHTML = `
       <div class="script-item-header">
@@ -757,6 +766,7 @@ function renderScriptTimeline() {
           <span class="badge badge-accent">${formatEngineLabel(b.engine)}</span>
         </div>
         <div class="script-item-right-controls">
+          ${seekBtnHtml}
           <span class="block-save-indicator" id="saveBadgeBlock_${b.index}">✓ Salvo</span>
           <div class="block-pause-group">
             <label>Pausa</label>
@@ -771,6 +781,16 @@ function renderScriptTimeline() {
 
     container.appendChild(item);
   });
+
+  container.querySelectorAll(".btn-seek-block").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const startMs = parseInt(e.currentTarget.dataset.startMs, 10);
+      const blockIdx = parseInt(e.currentTarget.dataset.blockIndex, 10);
+      seekToBlockTimestamp(startMs, blockIdx);
+    });
+  });
+
+  refreshIcons();
 
   container.querySelectorAll(".block-char-select").forEach((sel) => {
     sel.addEventListener("change", async (e) => {
@@ -938,6 +958,19 @@ async function startRender(quickTest = false) {
           }
 
           if (job.result) {
+            // Sincroniza timestamps dos blocos auditados para o roteiro em memória (Click-to-Seek e Karaoke Sync)
+            if (state.script && state.script.blocks && Array.isArray(job.result.audit)) {
+              const auditMap = new Map(job.result.audit.map((a) => [a.index, a]));
+              state.script.blocks.forEach((b) => {
+                const a = auditMap.get(b.index);
+                if (a) {
+                  if (a.start_ms !== undefined) b.start_ms = a.start_ms;
+                  if (a.end_ms !== undefined) b.end_ms = a.end_ms;
+                  if (a.duration_ms !== undefined) b.duration_ms = a.duration_ms;
+                }
+              });
+              renderScriptTimeline();
+            }
             setupAudioPlayer(job.result);
             renderAuditList(job.result.audit || []);
           }
@@ -968,13 +1001,63 @@ async function startRender(quickTest = false) {
 }
 
 // ==============================================================================
-// PLAYER DE ÁUDIO 100% CUSTOMIZADO (DARK STUDIO PLAYER)
+// PLAYER DE ÁUDIO 100% CUSTOMIZADO + KARAOKE SYNC & CLICK-TO-SEEK
 // ==============================================================================
 function formatTime(seconds) {
-  if (!seconds || !isFinite(seconds) || seconds < 0) return "00:00";
+  if (seconds === null || seconds === undefined || !isFinite(seconds) || seconds < 0) return "00:00";
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function seekToBlockTimestamp(startMs, blockIndex) {
+  const audioEl = document.getElementById("mainAudioPlayer");
+  if (!audioEl || !audioEl.src || isNaN(startMs)) {
+    showToast("Renderize o capítulo primeiro para habilitar a reprodução sincronizada.", "info", 2500);
+    return;
+  }
+
+  const targetSec = Math.max(0, startMs / 1000);
+  audioEl.currentTime = targetSec;
+  audioEl.play().catch(() => {});
+  updatePlayPauseUI(true);
+
+  const scrubberFill = document.getElementById("playerScrubberFill");
+  const seekInput = document.getElementById("playerSeekInput");
+  const currTimeEl = document.getElementById("playerCurrentTime");
+  if (currTimeEl) currTimeEl.textContent = formatTime(targetSec);
+  if (audioEl.duration && isFinite(audioEl.duration)) {
+    const pct = Math.min(100, (targetSec / audioEl.duration) * 100);
+    if (scrubberFill) scrubberFill.style.width = `${pct}%`;
+    if (seekInput) seekInput.value = Math.round((pct / 100) * 1000);
+  }
+
+  syncKaraokeHighlight(blockIndex);
+}
+
+function syncKaraokeHighlight(activeBlockIndex) {
+  if (state.activeSpeakingBlockIndex === activeBlockIndex) return;
+  state.activeSpeakingBlockIndex = activeBlockIndex;
+
+  // Destaca na Timeline do Roteiro (Etapa 2)
+  document.querySelectorAll(".script-item").forEach((el) => {
+    const idx = parseInt(el.dataset.blockIndex, 10);
+    const isCurrent = activeBlockIndex !== null && idx === activeBlockIndex;
+    el.classList.toggle("is-speaking", isCurrent);
+    if (isCurrent && state.activeStep === 2) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
+
+  // Destaca na Lista de Auditoria (Etapa 3)
+  document.querySelectorAll(".audit-item").forEach((el) => {
+    const idx = parseInt(el.dataset.blockIndex, 10);
+    const isCurrent = activeBlockIndex !== null && idx === activeBlockIndex;
+    el.classList.toggle("is-speaking", isCurrent);
+    if (isCurrent && state.activeStep === 3) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
 }
 
 function updatePlayPauseUI(isPlaying) {
@@ -1010,7 +1093,10 @@ function initCustomAudioPlayer() {
 
   audioEl.addEventListener("play", () => updatePlayPauseUI(true));
   audioEl.addEventListener("pause", () => updatePlayPauseUI(false));
-  audioEl.addEventListener("ended", () => updatePlayPauseUI(false));
+  audioEl.addEventListener("ended", () => {
+    updatePlayPauseUI(false);
+    syncKaraokeHighlight(null);
+  });
 
   audioEl.addEventListener("loadedmetadata", () => {
     if (totalTimeEl) totalTimeEl.textContent = formatTime(audioEl.duration);
@@ -1019,11 +1105,27 @@ function initCustomAudioPlayer() {
   });
 
   audioEl.addEventListener("timeupdate", () => {
-    if (!audioEl.duration) return;
-    const pct = (audioEl.currentTime / audioEl.duration) * 100;
-    if (scrubberFill) scrubberFill.style.width = `${pct}%`;
-    if (seekInput) seekInput.value = Math.round((pct / 100) * 1000);
-    if (currTimeEl) currTimeEl.textContent = formatTime(audioEl.currentTime);
+    const currentMs = audioEl.currentTime * 1000;
+    if (audioEl.duration) {
+      const pct = (audioEl.currentTime / audioEl.duration) * 100;
+      if (scrubberFill) scrubberFill.style.width = `${pct}%`;
+      if (seekInput) seekInput.value = Math.round((pct / 100) * 1000);
+      if (currTimeEl) currTimeEl.textContent = formatTime(audioEl.currentTime);
+    }
+
+    // Karaoke Sync: localiza o bloco ativo pelo intervalo [start_ms, end_ms]
+    if (state.script && Array.isArray(state.script.blocks)) {
+      const activeBlock = state.script.blocks.find(
+        (b) =>
+          b.start_ms !== null &&
+          b.start_ms !== undefined &&
+          b.end_ms !== null &&
+          b.end_ms !== undefined &&
+          currentMs >= b.start_ms &&
+          currentMs <= b.end_ms
+      );
+      syncKaraokeHighlight(activeBlock ? activeBlock.index : null);
+    }
   });
 
   seekInput?.addEventListener("input", (e) => {
@@ -1050,6 +1152,8 @@ function setupAudioPlayer(renderData, autoPlay = true) {
   const titleEl = document.getElementById("playerTitle");
   const metaEl = document.getElementById("playerMeta");
   const downloadBtn = document.getElementById("btnDownloadAudio");
+  const downloadM4bBtn = document.getElementById("btnDownloadM4b");
+  const downloadSrtBtn = document.getElementById("btnDownloadSrt");
   const playBtn = document.getElementById("btnPlayerPlayPause");
   const seekInput = document.getElementById("playerSeekInput");
 
@@ -1067,8 +1171,28 @@ function setupAudioPlayer(renderData, autoPlay = true) {
   titleEl.textContent = renderData.filename;
   metaEl.textContent = `${renderData.size_kb} KB • ${renderData.blocks_count} falas masterizadas`;
 
-  downloadBtn.href = `${API_BASE}${renderData.audio_url}`;
-  downloadBtn.classList.remove("disabled");
+  if (downloadBtn) {
+    downloadBtn.href = `${API_BASE}${renderData.audio_url}`;
+    downloadBtn.classList.remove("disabled");
+  }
+  if (downloadM4bBtn) {
+    if (renderData.m4b_url) {
+      downloadM4bBtn.href = `${API_BASE}${renderData.m4b_url}`;
+      downloadM4bBtn.classList.remove("disabled");
+    } else {
+      downloadM4bBtn.href = "#";
+      downloadM4bBtn.classList.add("disabled");
+    }
+  }
+  if (downloadSrtBtn) {
+    if (renderData.srt_url) {
+      downloadSrtBtn.href = `${API_BASE}${renderData.srt_url}`;
+      downloadSrtBtn.classList.remove("disabled");
+    } else {
+      downloadSrtBtn.href = "#";
+      downloadSrtBtn.classList.add("disabled");
+    }
+  }
 }
 
 function resetAudioPlayer() {
@@ -1076,6 +1200,8 @@ function resetAudioPlayer() {
   const titleEl = document.getElementById("playerTitle");
   const metaEl = document.getElementById("playerMeta");
   const downloadBtn = document.getElementById("btnDownloadAudio");
+  const downloadM4bBtn = document.getElementById("btnDownloadM4b");
+  const downloadSrtBtn = document.getElementById("btnDownloadSrt");
   const playBtn = document.getElementById("btnPlayerPlayPause");
   const seekInput = document.getElementById("playerSeekInput");
   const scrubberFill = document.getElementById("playerScrubberFill");
@@ -1085,6 +1211,7 @@ function resetAudioPlayer() {
   audioEl.pause();
   audioEl.removeAttribute("src");
   updatePlayPauseUI(false);
+  syncKaraokeHighlight(null);
 
   if (playBtn) playBtn.disabled = true;
   if (seekInput) { seekInput.value = 0; seekInput.disabled = true; }
@@ -1095,8 +1222,18 @@ function resetAudioPlayer() {
   titleEl.textContent = "Nenhum áudio carregado";
   metaEl.textContent = "Aguardando renderização";
 
-  downloadBtn.href = "#";
-  downloadBtn.classList.add("disabled");
+  if (downloadBtn) {
+    downloadBtn.href = "#";
+    downloadBtn.classList.add("disabled");
+  }
+  if (downloadM4bBtn) {
+    downloadM4bBtn.href = "#";
+    downloadM4bBtn.classList.add("disabled");
+  }
+  if (downloadSrtBtn) {
+    downloadSrtBtn.href = "#";
+    downloadSrtBtn.classList.add("disabled");
+  }
 }
 
 function renderAuditList(auditItems) {
@@ -1111,6 +1248,7 @@ function renderAuditList(auditItems) {
   auditItems.forEach((item) => {
     const row = document.createElement("div");
     row.className = "audit-item";
+    row.dataset.blockIndex = item.index;
 
     let badgeClass = "engine-edge";
     let badgeText = "Edge Neural";
