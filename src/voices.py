@@ -583,3 +583,41 @@ def validate_same_gender_blend(recipe: Dict[str, float]) -> bool:
         if len(v_clean) >= 2 and v_clean[1] in ("m", "f"):
             genders.add("M" if v_clean[1] == "m" else "F")
     return len(genders) <= 1
+
+
+def _autoload_custom_voices() -> None:
+    """Carrega vozes clonadas de data/voices/custom_voices.json para o catálogo em memória."""
+    import json as _json
+
+    custom_file = Path(__file__).resolve().parent.parent / "data" / "voices" / "custom_voices.json"
+    if not custom_file.exists():
+        return
+    try:
+        with open(custom_file, "r", encoding="utf-8") as f:
+            items = _json.load(f)
+        if not isinstance(items, list):
+            return
+        for item in items:
+            vid = item.get("id")
+            if not vid:
+                continue
+            VOICE_CATALOG[vid] = VoiceProfile(
+                id=vid,
+                name=item["name"],
+                engine=item.get("engine", "kokoro"),
+                gender=item["gender"],
+                apparent_age=item.get("apparent_age", "adulto"),
+                accent=item.get("accent", "brasileiro"),
+                timbre=item.get("timbre", "clonado_studio_lab"),
+                engine_voice_id=item["engine_voice_id"],
+                supports_acting_prompt=False,
+                supports_pitch_rate=False,
+                is_blend=True,
+                blend_recipe=item.get("blend_recipe"),
+                description=item.get("description", ""),
+            )
+    except Exception:
+        pass
+
+
+_autoload_custom_voices()

@@ -1,7 +1,7 @@
 /**
- * AUDIOBOOK STUDIO PRO — FRONTEND APPLICATION (SPA) - v9.0
- * Conecta-se à API FastAPI para extração, direção (gemini-3.5-flash-lite)
- * e síntese multi-motor (gemini-3.8-flash-lite-tts, Kokoro ONNX e Edge-TTS).
+ * AUDIOBOOK STUDIO PRO — FRONTEND APPLICATION (SPA) - v10.0
+ * Conecta-se à API FastAPI para extração, direção (gemini-3.5-flash-lite),
+ * clonagem acústica (Voice Studio Lab) e síntese multi-motor.
  */
 
 const API_BASE = window.location.origin.includes("github.io")
@@ -17,8 +17,10 @@ const state = {
   script: null,
   activeStep: 1,
   selectedFile: null,
+  isDirecting: false,
   isRendering: false,
   activeSpeakingBlockIndex: null,
+  lastClonedPreviewUrl: null,
 };
 
 function refreshIcons() {
@@ -108,7 +110,12 @@ async function checkBackendStatus() {
         bGemini.className = `badge ${data.gemini_active ? "badge-accent" : "badge-warning"}`;
       }
       if (bKokoro) {
-        bKokoro.textContent = data.kokoro_local_ready ? "Pronto (ONNX)" : "Ausente";
+        const prov = data.onnx_provider || "CPUExecutionProvider";
+        let provTag = "CPU";
+        if (prov.includes("Dml")) provTag = "GPU DirectML";
+        else if (prov.includes("ROCM")) provTag = "GPU ROCm";
+        else if (prov.includes("CUDA")) provTag = "GPU CUDA";
+        bKokoro.textContent = data.kokoro_local_ready ? `Pronto (${provTag})` : "Ausente";
         bKokoro.className = `badge ${data.kokoro_local_ready ? "badge-success" : "badge-danger"}`;
       }
       if (bFfmpeg) {
@@ -483,6 +490,8 @@ function updateTextMetrics(text) {
 // 5. ETAPA 2: SALA DO DIRETOR, ELENCO REFINADO & ROTEIRO INTERATIVO
 // ==============================================================================
 async function runDirector() {
+  if (state.isDirecting) return;
+
   const text = document.getElementById("curatedTextArea").value.trim();
   if (!text) {
     showToast("Insira ou extraia um texto na Etapa 1 antes de dirigir a cena.", "warning");
@@ -491,8 +500,28 @@ async function runDirector() {
   }
 
   const btn = document.getElementById("btnRunDirector");
+  const dirProgWrap = document.getElementById("directorProgressWrapper");
+  const dirProgFill = document.getElementById("directorProgressBarFill");
+  const dirProgText = document.getElementById("directorProgressStatusText");
+  const dirProgPct = document.getElementById("directorProgressPctText");
+
+  const resetDirectorBtn = () => {
+    state.isDirecting = false;
+    btn.disabled = false;
+    btn.innerHTML = `<i data-lucide="wand-2" class="icon-sm"></i><span>Analisar e Dirigir Cena</span>`;
+    refreshIcons();
+  };
+
+  state.isDirecting = true;
   btn.disabled = true;
   btn.innerHTML = `<span>Analisando cena e estruturando falas...</span>`;
+
+  if (dirProgWrap) {
+    dirProgWrap.classList.remove("hidden");
+    if (dirProgFill) dirProgFill.style.width = "5%";
+    if (dirProgPct) dirProgPct.textContent = "5%";
+    if (dirProgText) dirProgText.textContent = "Iniciando direção cênica...";
+  }
 
   const mode = document.querySelector('input[name="directorMode"]:checked').value;
   const forceExpress = mode === "express";
@@ -509,27 +538,77 @@ async function runDirector() {
         force_express: forceExpress,
         fuse_speeches: fuseSpeeches,
         max_chars_per_speech: 1200,
+        async_mode: true,
       }),
     });
 
-    if (res.ok) {
-      const data = await res.json();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const errMsg = err.detail || res.statusText || "Erro desconhecido ao processar o roteiro.";
+      if (dirProgText) dirProgText.textContent = `Erro: ${errMsg}`;
+      showToast(`Erro na Direção: ${errMsg}`, "error");
+      resetDirectorBtn();
+      return;
+    }
+
+    const data = await res.json();
+
+    // Resposta síncrona direta (compatibilidade)
+    if (data.script) {
       state.script = data.script;
       state.characters = data.characters || [];
+      if (dirProgFill) dirProgFill.style.width = "100%";
+      if (dirProgPct) dirProgPct.textContent = "100%";
+      if (dirProgText) dirProgText.textContent = "Direção concluída!";
       renderCastGrid();
       renderScriptTimeline();
       showToast(`Direção concluída! ${state.script.blocks.length} blocos prontos para síntese.`, "success");
-    } else {
-      const err = await res.json().catch(() => ({}));
-      const errMsg = err.detail || res.statusText || "Erro desconhecido ao processar o roteiro.";
-      showToast(`Erro na Direção: ${errMsg}`, "error");
+      resetDirectorBtn();
+      return;
     }
+
+    // Resposta assíncrona: acompanha progresso lote a lote via polling
+    const totalChunks = data.total_chunks || 1;
+    const pollTimer = setInterval(async () => {
+      try {
+        const stRes = await fetch(`${API_BASE}/api/projects/${state.currentSlug}/direct/status`);
+        if (!stRes.ok) return;
+        const job = await stRes.json();
+
+        if (job.status === "running") {
+          const pct = Math.max(5, job.percent || 10);
+          if (dirProgFill) dirProgFill.style.width = `${pct}%`;
+          if (dirProgPct) dirProgPct.textContent = `${pct}%`;
+          if (dirProgText) {
+            const motorLabel = forceExpress ? "Modo Express" : "Gemini 3.5";
+            const snippet = job.current_text ? ` ("${job.current_text}...")` : "";
+            dirProgText.textContent = `Dirigindo lote ${job.current_chunk || 1} de ${job.total_chunks || totalChunks} com ${motorLabel}${snippet}`;
+          }
+        } else if (job.status === "completed" && job.result) {
+          clearInterval(pollTimer);
+          state.script = job.result.script;
+          state.characters = job.result.characters || [];
+          if (dirProgFill) dirProgFill.style.width = "100%";
+          if (dirProgPct) dirProgPct.textContent = "100%";
+          if (dirProgText) dirProgText.textContent = `Concluído: ${state.script.blocks.length} falas estruturadas.`;
+          renderCastGrid();
+          renderScriptTimeline();
+          showToast(`Direção concluída! ${state.script.blocks.length} blocos prontos para síntese.`, "success");
+          resetDirectorBtn();
+        } else if (job.status === "error") {
+          clearInterval(pollTimer);
+          if (dirProgText) dirProgText.textContent = `Erro: ${job.error || "Falha na direção."}`;
+          showToast(`Erro na Direção: ${job.error || "Erro desconhecido"}`, "error");
+          resetDirectorBtn();
+        }
+      } catch (pollErr) {
+        console.error("Erro no polling de direção:", pollErr);
+      }
+    }, 700);
   } catch (e) {
+    if (dirProgText) dirProgText.textContent = `Falha de conexão: ${e.message || e}`;
     showToast(`Falha de conexão com o motor do Diretor: ${e.message || e}`, "error");
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = `<i data-lucide="wand-2" class="icon-sm"></i><span>Analisar e Dirigir Cena</span>`;
-    refreshIcons();
+    resetDirectorBtn();
   }
 }
 
@@ -766,6 +845,10 @@ function renderScriptTimeline() {
           <span class="badge badge-accent">${formatEngineLabel(b.engine)}</span>
         </div>
         <div class="script-item-right-controls">
+          <button class="btn-resynth-block" data-block-index="${b.index}" type="button" title="Regravar e ouvir apenas esta fala">
+            <i data-lucide="refresh-cw" class="icon-xs"></i>
+            <span>Sintetizar fala</span>
+          </button>
           ${seekBtnHtml}
           <span class="block-save-indicator" id="saveBadgeBlock_${b.index}">✓ Salvo</span>
           <div class="block-pause-group">
@@ -780,6 +863,14 @@ function renderScriptTimeline() {
     `;
 
     container.appendChild(item);
+  });
+
+  container.querySelectorAll(".btn-resynth-block").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      const targetBtn = e.currentTarget;
+      const blockIdx = parseInt(targetBtn.dataset.blockIndex, 10);
+      await synthesizeSingleBlock(blockIdx, targetBtn);
+    });
   });
 
   container.querySelectorAll(".btn-seek-block").forEach((btn) => {
@@ -823,6 +914,61 @@ function renderScriptTimeline() {
       }
     });
   });
+}
+
+async function synthesizeSingleBlock(blockIndex, btnEl) {
+  if (!state.currentSlug) return;
+  const originalHtml = btnEl.innerHTML;
+  btnEl.disabled = true;
+  btnEl.innerHTML = `<span>Sintetizando...</span>`;
+
+  try {
+    // Garante que qualquer edição pendente no textarea desta fala seja salva antes de regravar
+    const txtEl = document.querySelector(`.block-text-input[data-block-index="${blockIndex}"]`);
+    const block = state.script?.blocks?.find((b) => b.index === blockIndex);
+    if (txtEl && block && txtEl.value.trim() !== block.text) {
+      await saveBlockChanges(blockIndex, { text: txtEl.value.trim() }, false);
+    }
+
+    const res = await fetch(
+      `${API_BASE}/api/projects/${state.currentSlug}/script/1/blocks/${blockIndex}/synthesize`,
+      { method: "POST" }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.block && state.script?.blocks) {
+        const idx = state.script.blocks.findIndex((b) => b.index === blockIndex);
+        if (idx !== -1) state.script.blocks[idx] = data.block;
+      }
+
+      const audioEl = document.getElementById("previewAudioElement");
+      const sep = data.audio_url.includes("?") ? "&" : "?";
+      audioEl.src = `${API_BASE}${data.audio_url}${sep}t=${Date.now()}`;
+      btnEl.innerHTML = `<i data-lucide="volume-2" class="icon-xs"></i><span>Ouvindo...</span>`;
+      refreshIcons();
+
+      const restoreBtn = () => {
+        btnEl.disabled = false;
+        btnEl.innerHTML = originalHtml;
+        refreshIcons();
+      };
+      audioEl.onended = restoreBtn;
+      audioEl.onerror = restoreBtn;
+      audioEl.play().catch(restoreBtn);
+      flashBlockSaveBadge(blockIndex);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(`Erro ao sintetizar fala #${blockIndex}: ${err.detail || res.statusText}`, "error");
+      btnEl.disabled = false;
+      btnEl.innerHTML = originalHtml;
+      refreshIcons();
+    }
+  } catch (e) {
+    showToast(`Falha ao sintetizar fala #${blockIndex}: ${e.message || e}`, "error");
+    btnEl.disabled = false;
+    btnEl.innerHTML = originalHtml;
+    refreshIcons();
+  }
 }
 
 function flashBlockSaveBadge(blockIndex) {
@@ -1549,4 +1695,142 @@ function initEventListeners() {
       showToast(`Falha ao criar projeto: ${e.message || e}`, "error");
     }
   });
+
+  // Modal Voice Studio Lab (Clonagem Acústica)
+  const modalClone = document.getElementById("voiceCloneModal");
+  document.getElementById("btnOpenVoiceCloneModal")?.addEventListener("click", () => {
+    if (modalClone) modalClone.classList.remove("hidden");
+    renderCustomVoicesList();
+    refreshIcons();
+  });
+  document.getElementById("btnCloseVoiceCloneModal")?.addEventListener("click", () => {
+    modalClone?.classList.add("hidden");
+  });
+
+  document.getElementById("btnPreviewClonedVoice")?.addEventListener("click", () => {
+    if (!state.lastClonedPreviewUrl) return;
+    const audioEl = document.getElementById("previewAudioElement");
+    const sep = state.lastClonedPreviewUrl.includes("?") ? "&" : "?";
+    audioEl.src = `${API_BASE}${state.lastClonedPreviewUrl}${sep}t=${Date.now()}`;
+    audioEl.play().catch(() => {});
+  });
+
+  document.getElementById("btnSubmitVoiceClone")?.addEventListener("click", async () => {
+    const nameInput = document.getElementById("cloneVoiceName");
+    const fileInputClone = document.getElementById("cloneVoiceFile");
+    const genderInput = document.getElementById("cloneVoiceGender");
+    const btnClone = document.getElementById("btnSubmitVoiceClone");
+    const telPanel = document.getElementById("cloneTelemetryPanel");
+    const telMetrics = document.getElementById("cloneTelemetryMetrics");
+
+    const voiceName = nameInput?.value?.trim() || "";
+    const fileObj = fileInputClone?.files?.[0];
+    if (!voiceName) return showToast("Informe um nome para a voz clonada.", "warning");
+    if (!fileObj) return showToast("Selecione um arquivo de áudio de referência (.wav, .mp3, .m4a ou .ogg).", "warning");
+
+    const origHtml = btnClone.innerHTML;
+    btnClone.disabled = true;
+    btnClone.innerHTML = `<span>Analisando espectro vocal e clonando...</span>`;
+
+    const formData = new FormData();
+    formData.append("name", voiceName);
+    formData.append("file", fileObj);
+    if (genderInput && genderInput.value) {
+      formData.append("gender", genderInput.value);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/voices/clone`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const t = data.telemetry || {};
+        const recipeStr = Object.entries(t.blend_recipe || {})
+          .map(([k, v]) => `${k}: ${Math.round(v * 100)}%`)
+          .join(" + ");
+
+        if (telMetrics) {
+          telMetrics.innerHTML = `
+            <span class="badge badge-accent">F0: ${t.f0_hz} Hz</span>
+            <span class="badge badge-info">Brilho: ${t.spectral_centroid_hz} Hz</span>
+            <span class="badge badge-success">Perfil: ${t.gender} / ${t.apparent_age}</span>
+            <div style="width:100%; margin-top:4px; color:var(--text-secondary)">Receita Kokoro: ${recipeStr}</div>
+          `;
+        }
+        if (telPanel) telPanel.classList.remove("hidden");
+        state.lastClonedPreviewUrl = data.preview_url || null;
+
+        await loadVoicesCatalog();
+        renderCastGrid();
+        renderCustomVoicesList();
+        showToast(`Voz "${data.voice?.name}" clonada e adicionada ao catálogo!`, "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Erro ao clonar voz: ${err.detail || res.statusText}`, "error");
+      }
+    } catch (e) {
+      showToast(`Falha de conexão no Studio Lab: ${e.message || e}`, "error");
+    } finally {
+      btnClone.disabled = false;
+      btnClone.innerHTML = origHtml;
+      refreshIcons();
+    }
+  });
+}
+
+function renderCustomVoicesList() {
+  const listEl = document.getElementById("customVoicesList");
+  if (!listEl) return;
+
+  const customVoices = (state.voicesCatalog || []).filter((v) => v.is_custom || (v.id || "").startsWith("clone_"));
+  if (customVoices.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">Nenhuma voz clonada ainda.</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  customVoices.forEach((v) => {
+    const row = document.createElement("div");
+    row.className = "custom-voice-row";
+    row.innerHTML = `
+      <div>
+        <strong>${v.name}</strong>
+        <span style="color:var(--text-muted); margin-left:6px">${v.gender} • ${v.apparent_age}</span>
+      </div>
+      <div class="flex-align-center gap-2">
+        <button class="btn btn-secondary btn-sm btn-preview-custom" data-voice-id="${v.id}" type="button" title="Ouvir prévia">
+          <i data-lucide="play" class="icon-xs"></i>
+        </button>
+        <button class="btn btn-danger-ghost btn-sm btn-delete-custom" data-voice-id="${v.id}" type="button" title="Excluir voz clonada">
+          <i data-lucide="trash-2" class="icon-xs"></i>
+        </button>
+      </div>
+    `;
+    listEl.appendChild(row);
+  });
+
+  listEl.querySelectorAll(".btn-preview-custom").forEach((b) => {
+    b.addEventListener("click", (e) => playVoiceSample(e.currentTarget.dataset.voiceId, e.currentTarget));
+  });
+
+  listEl.querySelectorAll(".btn-delete-custom").forEach((b) => {
+    b.addEventListener("click", async (e) => {
+      const vid = e.currentTarget.dataset.voiceId;
+      try {
+        const res = await fetch(`${API_BASE}/api/voices/${vid}`, { method: "DELETE" });
+        if (res.ok) {
+          await loadVoicesCatalog();
+          renderCastGrid();
+          renderCustomVoicesList();
+          showToast("Voz clonada removida.", "info", 2200);
+        }
+      } catch (err) {
+        showToast("Falha ao remover voz clonada.", "error");
+      }
+    });
+  });
+
+  refreshIcons();
 }

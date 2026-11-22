@@ -128,29 +128,73 @@ def _replace_roman_after_keyword(match: re.Match) -> str:
     return f"{prefixo} {int_to_ptbr(valor)}"
 
 
+_FACTORIAL_VAR_MAP: Dict[str, str] = {
+    "n": "êne fatorial",
+    "k": "cá fatorial",
+    "m": "ême fatorial",
+    "a": "a fatorial",
+    "b": "bê fatorial",
+    "c": "cê fatorial",
+}
+
+
 def normalize_phonetics_ptbr(text: str) -> str:
     """
     Aplica normalização fonética para português brasileiro:
-    1. Símbolos matemáticos e setas (>=, <=, !=, ->, ➔).
-    2. Algarismos romanos após substantivos clássicos (Século XXI, Capítulo IV, Aula III, Parte II).
-    3. Siglas técnicas case-sensitive com fronteira de palavra (SGBD, SQL, NoSQL, ETL, DW, XAI, etc.).
+    1. Notação de probabilidade, conjuntos e combinatória (P(A|B), n!, O(n!), etc.).
+    2. Símbolos matemáticos, de conjuntos e setas (>=, <=, !=, ->, ➔, ∪, ∩, ·, etc.).
+    3. Algarismos romanos após substantivos clássicos (Século XXI, Capítulo IV, Aula III, Parte II).
+    4. Siglas técnicas case-sensitive com fronteira de palavra (SGBD, SQL, NoSQL, ETL, DW, XAI, etc.).
     """
     if not text:
         return ""
 
     t = text
 
-    # 1. Símbolos matemáticos e lógicos
+    # 1. Notação de probabilidade e complexidade/funções
+    t = re.sub(r"\bP\s*\(\s*([A-Z])\s*\|\s*([A-Z])\s*\)", r"Pê de \1 dado \2", t)
+    t = re.sub(r"\bP\s*\(\s*([A-Z])\s*∪\s*([A-Z])\s*\)", r"Pê de \1 união \2", t)
+    t = re.sub(r"\bP\s*\(\s*([A-Z])\s*∩\s*([A-Z])\s*\)", r"Pê de \1 interseção \2", t)
+    t = re.sub(r"\bP\s*\(\s*([A-Z])\^c\s*\)", r"Pê de \1 complementar", t)
+    t = re.sub(r"\b([A-Z])\^c\b", r"\1 complementar", t)
+    t = re.sub(r"\bO\s*\(\s*n!\s*\)", "Ó de êne fatorial", t)
+
+    # 2. Fatoriais matemáticos (sem afetar exclamações comuns do português)
+    t = re.sub(r"\(\s*n\s*-\s*k\s*\)!", "êne menos cá fatorial", t)
+    t = re.sub(r"\(\s*n\s*-\s*(\d+)\s*\)!", r"êne menos \1 fatorial", t)
+    t = re.sub(r"\b(\d+)!", r"\1 fatorial", t)
+    t = re.sub(
+        r"\b([nkmabc])!(?=\s|$|[),.;=/*+\-·])",
+        lambda m: _FACTORIAL_VAR_MAP[m.group(1)],
+        t,
+    )
+
+    # 3. Símbolos matemáticos, lógicos e de teoria dos conjuntos
     t = t.replace(">=", " maior ou igual a ")
     t = t.replace("<=", " menor ou igual a ")
     t = t.replace("!=", " diferente de ")
     t = t.replace("->", ", levando a ")
     t = t.replace("➔", ", levando a ")
+    t = t.replace("∪", " união ")
+    t = t.replace("∩", " interseção ")
+    t = t.replace("∈", " pertence a ")
+    t = t.replace("∉", " não pertence a ")
+    t = t.replace("⊆", " contido em ")
+    t = t.replace("⊂", " contido em ")
+    t = t.replace("∅", " conjunto vazio ")
+    t = t.replace("≈", " aproximadamente igual a ")
+    t = t.replace("≠", " diferente de ")
+    t = t.replace("≥", " maior ou igual a ")
+    t = t.replace("≤", " menor ou igual a ")
+    t = t.replace("·", " vezes ")
+    t = t.replace("∑", " somatório ")
+    t = t.replace("√", " raiz quadrada de ")
+    t = t.replace("∞", " infinito ")
 
-    # 2. Algarismos romanos após termos clássicos
+    # 4. Algarismos romanos após termos clássicos
     t = _ROMAN_CONTEXT_RE.sub(_replace_roman_after_keyword, t)
 
-    # 3. Siglas técnicas (case-sensitive, com fronteira de palavra \b)
+    # 5. Siglas técnicas (case-sensitive, com fronteira de palavra \b)
     for sigla, fonetica in TECH_ACRONYMS_PTBR.items():
         t = re.sub(rf"\b{re.escape(sigla)}\b", fonetica, t)
 

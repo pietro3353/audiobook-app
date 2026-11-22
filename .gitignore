@@ -59,6 +59,7 @@ data/inputs/*
 
 data/projects/*
 !data/projects/.gitkeep
+data/voices/
 
 # IDEs and OS
 .vscode/

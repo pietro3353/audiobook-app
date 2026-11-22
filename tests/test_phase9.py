@@ -289,8 +289,8 @@ def test_5_6_7_timestamps_subtitles_m4b_and_ui():
     css = client.get("/styles.css").text
     js = client.get("/app.js").text
 
-    assert "styles.css?v=9.0" in html
-    assert "app.js?v=9.0" in html
+    assert ("styles.css?v=9.0" in html or "styles.css?v=10.0" in html)
+    assert ("app.js?v=9.0" in html or "app.js?v=10.0" in html)
     assert "btnDownloadM4b" in html
     assert "btnDownloadSrt" in html
     assert 'data-lucide="book-open"' in html

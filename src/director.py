@@ -10,7 +10,7 @@ Responsável por:
 
 import os
 import re
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -499,6 +499,7 @@ class Director:
         force_express: bool = False,
         fuse_speeches: bool = True,
         max_chars_per_speech: int = 1200,
+        on_progress: Optional[Callable] = None,
     ) -> ChapterScript:
         """
         Direciona um capítulo completo, dividindo em lotes, processando com
@@ -519,9 +520,15 @@ class Director:
 
         resumos_cenas: List[str] = []
         usar_express = force_express or not self.is_gemini_available()
+        total_chunks = len(chunks)
 
-        for chunk_data in chunks:
+        for idx_chunk, chunk_data in enumerate(chunks, start=1):
             chunk_text = chunk_data["text"]
+            if on_progress:
+                try:
+                    on_progress(idx_chunk, total_chunks, chunk_text[:60])
+                except TypeError:
+                    on_progress(idx_chunk, total_chunks)
 
             if usar_express:
                 blocos_chunk = self.direct_chunk_express(

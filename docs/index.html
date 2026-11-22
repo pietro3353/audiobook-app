@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="styles.css?v=9.0">
+  <link rel="stylesheet" href="styles.css?v=10.0">
 </head>
 <body class="dark-theme">
   <!-- CABEÇALHO SUPERIOR -->
@@ -263,6 +263,16 @@
               <i data-lucide="wand-2" class="icon-sm"></i>
               <span>Analisar e Dirigir Cena</span>
             </button>
+
+            <div id="directorProgressWrapper" class="progress-wrapper hidden">
+              <div class="progress-info">
+                <span id="directorProgressStatusText">Analisando cena...</span>
+                <span id="directorProgressPctText">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div id="directorProgressBarFill" class="progress-fill" style="width: 0%"></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -276,7 +286,13 @@
               </div>
               <p>Ouça uma prévia real de 2 segundos de cada voz e personalize o timbre de qualquer personagem.</p>
             </div>
-            <span id="castCountBadge" class="badge">0 vozes</span>
+            <div class="flex-align-center gap-2">
+              <button id="btnOpenVoiceCloneModal" class="btn btn-secondary btn-sm" type="button" title="Clonar voz a partir de amostra de áudio (Voice Studio Lab)">
+                <i data-lucide="audio-waveform" class="icon-xs"></i>
+                <span>Clonar Voz (Studio Lab)</span>
+              </button>
+              <span id="castCountBadge" class="badge">0 vozes</span>
+            </div>
           </div>
           <div class="card-body">
             <div id="castGrid" class="cast-grid">
@@ -559,12 +575,62 @@
     </div>
   </div>
 
+  <!-- MODAL VOICE STUDIO LAB (CLONAGEM ACÚSTICA DE VOZ) -->
+  <div id="voiceCloneModal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="card-title-row">
+          <i data-lucide="audio-waveform" class="icon-sm text-accent"></i>
+          <h3>Voice Studio Lab — Clonar Voz Local</h3>
+        </div>
+        <button id="btnCloseVoiceCloneModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="section-desc mb-3">Envie uma amostra de 5 a 15 segundos (.WAV, .MP3, .M4A ou .OGG). O Studio Lab analisa F0, brilho espectral e cadência para sintetizar uma assinatura vocal local no Kokoro.</p>
+        <div class="input-group">
+          <label for="cloneVoiceName">Nome da Voz Clonada</label>
+          <input type="text" id="cloneVoiceName" placeholder="Ex: Professor Unicamp" class="styled-input">
+        </div>
+        <div class="input-group">
+          <label for="cloneVoiceFile">Arquivo de Áudio de Referência</label>
+          <input type="file" id="cloneVoiceFile" accept=".wav,.mp3,.m4a,.ogg" class="styled-input">
+        </div>
+        <div class="input-group">
+          <label for="cloneVoiceGender">Gênero Acústico</label>
+          <select id="cloneVoiceGender" class="styled-select">
+            <option value="">Auto-detectar via F0 (Frequência Fundamental)</option>
+            <option value="M">Masculino</option>
+            <option value="F">Feminino</option>
+          </select>
+        </div>
+        <button id="btnSubmitVoiceClone" class="btn btn-primary btn-block mt-3" type="button">
+          <i data-lucide="sparkles" class="icon-sm"></i>
+          <span>Analisar Amostra e Clonar Voz</span>
+        </button>
+
+        <div id="cloneTelemetryPanel" class="telemetry-panel hidden mt-3">
+          <div id="cloneTelemetryMetrics" class="telemetry-metrics"></div>
+          <button id="btnPreviewClonedVoice" class="btn btn-secondary btn-sm mt-2" type="button">
+            <i data-lucide="play" class="icon-xs"></i>
+            <span>Ouvir Voz Clonada (2s)</span>
+          </button>
+        </div>
+
+        <hr class="divider">
+        <h4 class="modal-section-title">Vozes Clonadas Salvas</h4>
+        <div id="customVoicesList" class="custom-voices-list">
+          <div class="empty-state">Nenhuma voz clonada ainda.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- AUDIO ELEMENT PARA PREVIEW DE VOZ DE 2S -->
   <audio id="previewAudioElement" class="hidden"></audio>
 
   <!-- CONTAINER DE NOTIFICAÇÕES TOAST -->
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
-  <script src="app.js?v=9.0"></script>
+  <script src="app.js?v=10.0"></script>
 </body>
 </html>

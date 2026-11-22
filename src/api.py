@@ -11,6 +11,7 @@ Expõe endpoints REST para:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import os
 import shutil
 import time
@@ -40,17 +41,49 @@ from src.mixer import AudioMixer
 from src.models import ChapterScript, ProjectMetadata, SpeechBlock
 from src.project_manager import ProjectManager
 from src.synthesizer import Synthesizer
+from src.voice_cloner import create_cloned_voice_profile, delete_custom_voice
 from src.voices import VOICE_CATALOG, find_fallback_voice, list_voices
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DOCS_DIR = BASE_DIR / "docs"
 DATA_DIR = BASE_DIR / "data"
 
+
+def _install_windows_asyncio_filter() -> None:
+    """Silencia ConnectionResetError (WinError 10054) no event loop do Windows ao fazer seek no player."""
+    if os.name != "nt":
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        default_handler = loop.get_exception_handler()
+
+        def _custom_exception_handler(cur_loop, context):
+            exc = context.get("exception")
+            msg = str(context.get("message", ""))
+            if isinstance(exc, ConnectionResetError) or "10054" in str(exc or "") or "_call_connection_lost" in msg:
+                return
+            if default_handler is not None:
+                default_handler(cur_loop, context)
+            else:
+                cur_loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_custom_exception_handler)
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _install_windows_asyncio_filter()
+    yield
+
+
 # Inicialização da aplicação FastAPI
 app = FastAPI(
     title="AudioBook Studio AI API",
     description="Motor de Produção de Audiolivros e Rádio-Teatro com IA",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Habilita CORS para permitir acessos locais e do GitHub Pages
@@ -109,6 +142,7 @@ class DirectChapterRequest(BaseModel):
     force_express: bool = False
     fuse_speeches: bool = True
     max_chars_per_speech: int = 1200
+    async_mode: bool = False  # True = processa em background com polling de status
 
 
 class RenderChapterRequest(BaseModel):
@@ -132,12 +166,25 @@ class SaveTextRequest(BaseModel):
 # 1. ROTAS DE STATUS & CONFIGURAÇÕES
 # ==============================================================================
 
+def _detect_best_onnx_provider() -> str:
+    """Identifica o melhor provedor ONNX Runtime instalado (DirectML/ROCm/CUDA ou CPU)."""
+    try:
+        import onnxruntime as ort
+        disponiveis = ort.get_available_providers()
+        for prov in ("DmlExecutionProvider", "ROCMExecutionProvider", "CUDAExecutionProvider"):
+            if prov in disponiveis:
+                return prov
+        return "CPUExecutionProvider" if "CPUExecutionProvider" in disponiveis else (disponiveis[0] if disponiveis else "CPUExecutionProvider")
+    except Exception:
+        return "CPUExecutionProvider"
+
+
 @app.get("/api/status")
 def get_system_status():
-    """Retorna o status do servidor, checagem de chave e modelos locais."""
+    """Retorna o status do servidor, checagem de chave, hardware ONNX e modelos locais."""
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     tem_gemini = bool(gemini_key and gemini_key != "sua_chave_api_aqui")
-    
+
     kokoro_model = DATA_DIR / "models" / "kokoro-v1.0.onnx"
     kokoro_voices = DATA_DIR / "models" / "voices-v1.0.bin"
     tem_kokoro = kokoro_model.exists() and kokoro_voices.exists()
@@ -147,6 +194,8 @@ def get_system_status():
         "gemini_active": tem_gemini,
         "kokoro_local_ready": tem_kokoro,
         "ffmpeg_ready": bool(shutil.which(mixer.ffmpeg_path) or Path(mixer.ffmpeg_path).exists()),
+        "onnx_provider": _detect_best_onnx_provider(),
+        "custom_voices_count": sum(1 for vid in VOICE_CATALOG if vid.startswith("clone_")),
     }
 
 
@@ -373,6 +422,8 @@ def update_script_block(
 
     if req.text is not None:
         target_block.text = req.text.strip()
+        if req.text_for_tts is None:
+            target_block.text_for_tts = target_block.text
     if req.text_for_tts is not None:
         target_block.text_for_tts = req.text_for_tts.strip() if req.text_for_tts else None
     if req.emotion is not None:
@@ -398,7 +449,7 @@ def update_script_block(
     target_block.volume = vol_str
     target_block.acting_prompt = acting_prompt
 
-    # Invalida cache temporário deste bloco
+    # Invalida cache temporário deste bloco em temp/ e temp/cap_XX/
     temp_dir = pm.get_project_dir(slug) / "temp"
     if temp_dir.exists():
         patterns = [
@@ -406,9 +457,11 @@ def update_script_block(
             f"block_{target_block.index}_*.mp3",
             f"block_{block_index:04d}_*.mp3",
             f"block_{block_index}_*.mp3",
+            f"norm_single_{target_block.index:04d}.mp3",
+            f"norm_single_{block_index:04d}.mp3",
         ]
         for pat in patterns:
-            for old_chunk in temp_dir.glob(pat):
+            for old_chunk in temp_dir.rglob(pat):
                 try:
                     old_chunk.unlink()
                 except Exception:
@@ -426,8 +479,90 @@ def update_script_block(
     return {"success": True, "block": target_block.model_dump()}
 
 
+@app.post("/api/projects/{slug}/script/{chapter_number}/blocks/{block_index}/synthesize")
+async def synthesize_single_block(slug: str, chapter_number: int, block_index: int):
+    """Re-sintetiza e normaliza cirurgicamente apenas uma fala da Timeline para audição instantânea."""
+    if not pm.project_exists(slug):
+        raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+    script = pm.load_chapter_script(slug, chapter_number)
+    if not script or not script.blocks:
+        raise HTTPException(status_code=404, detail="Roteiro ou capítulo não encontrado.")
+
+    target_block = None
+    for b in script.blocks:
+        if b.index == block_index:
+            target_block = b
+            break
+    if not target_block and 0 <= block_index < len(script.blocks):
+        target_block = script.blocks[block_index]
+
+    if not target_block:
+        raise HTTPException(status_code=404, detail=f"Bloco {block_index} não encontrado no capítulo {chapter_number}.")
+
+    bible = pm.load_character_bible(slug)
+    char = bible.get(target_block.character_id) or (
+        bible.get("narrador") if target_block.character_id in ("narrador", "narracao") else None
+    )
+    if char:
+        target_block.voice_id = char.voice_id
+        target_block.engine = char.engine
+        target_block.blend_recipe = char.blend_recipe
+        target_block.fallback_voice_id = char.fallback_voice_id
+        target_block.fallback_engine = char.fallback_engine
+
+    temp_cap_dir = pm.get_project_dir(slug) / "temp" / f"cap_{chapter_number:02d}"
+    temp_cap_dir.mkdir(parents=True, exist_ok=True)
+
+    # Purga cache antigo desse bloco para garantir que edições recentes tenham efeito imediato
+    for old in temp_cap_dir.glob(f"block_{target_block.index:04d}_*.mp3"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    norm_single_path = temp_cap_dir / f"norm_single_{target_block.index:04d}.mp3"
+    if norm_single_path.exists():
+        try:
+            norm_single_path.unlink()
+        except Exception:
+            pass
+
+    synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
+    prim_path = synth.primary_block_path(temp_cap_dir, target_block.index, target_block)
+    chunk_real = await synth.synthesize_block(target_block, prim_path)
+
+    is_kokoro = (target_block.actual_engine or target_block.engine) == "kokoro"
+    mixer._last_duration_ms = 0
+    mixer.normalize_and_add_pause(
+        raw_audio_path=chunk_real,
+        pause_after_ms=target_block.pause_after_ms,
+        output_normalized_path=norm_single_path,
+        is_kokoro=is_kokoro,
+        enable_kokoro_eq=True,
+        enable_room_tone=False,
+        volume=getattr(target_block, "volume", None),
+    )
+
+    dur_ms = int(getattr(mixer, "_last_duration_ms", 0))
+    if dur_ms <= 0 and norm_single_path.exists():
+        try:
+            from pydub import AudioSegment
+            dur_ms = int(len(AudioSegment.from_file(str(norm_single_path))))
+        except Exception:
+            dur_ms = 0
+    if dur_ms > 0:
+        target_block.duration_ms = dur_ms
+
+    pm.save_chapter_script(slug, script)
+
+    return {
+        "success": True,
+        "audio_url": f"/api/audio/projects/{slug}/block/{chapter_number}/{target_block.index}",
+        "block": target_block.model_dump(),
+    }
+
+
 # ==============================================================================
-# 3. ROTAS DE CATÁLOGO DE VOZES & PREVIEW (AMOSTRA 2s)
+# 3. ROTAS DE CATÁLOGO DE VOZES, VOICE STUDIO LAB & PREVIEW (AMOSTRA 2s)
 # ==============================================================================
 
 @app.get("/api/voices")
@@ -444,9 +579,69 @@ def get_voices():
             "accent": v.accent,
             "timbre": v.timbre,
             "is_blend": v.is_blend,
+            "is_custom": v.id.startswith("clone_"),
             "description": v.description,
         })
     return {"voices": catalogo}
+
+
+@app.post("/api/voices/clone")
+async def clone_voice_studio_lab(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    gender: Optional[str] = Form(None),
+):
+    """Voice Studio Lab: analisa amostra vocal e cria voz clonada local compatível com Kokoro."""
+    try:
+        conteudo = await file.read()
+        if not conteudo:
+            raise HTTPException(status_code=400, detail="O arquivo de áudio de referência está vazio.")
+
+        prof, telemetry = create_cloned_voice_profile(
+            name=name,
+            audio_bytes=conteudo,
+            filename=file.filename or "ref.wav",
+            gender_override=gender,
+        )
+
+        synth = Synthesizer(gemini_api_key=os.getenv("GEMINI_API_KEY", ""))
+        sample_file = await synth.generate_voice_sample(voice_id=prof.id)
+
+        return {
+            "success": True,
+            "voice": {
+                "id": prof.id,
+                "name": prof.name,
+                "engine": prof.engine,
+                "gender": prof.gender,
+                "apparent_age": prof.apparent_age,
+                "accent": prof.accent,
+                "timbre": prof.timbre,
+                "is_blend": prof.is_blend,
+                "is_custom": True,
+                "blend_recipe": prof.blend_recipe,
+                "description": prof.description,
+            },
+            "telemetry": telemetry,
+            "preview_url": f"/api/audio/sample/{sample_file.name}" if sample_file.exists() else None,
+        }
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao clonar voz no Studio Lab: {str(e)}")
+
+
+@app.delete("/api/voices/{voice_id}")
+def remove_custom_voice(voice_id: str):
+    """Remove uma voz customizada criada no Voice Studio Lab."""
+    if not voice_id.startswith("clone_"):
+        raise HTTPException(status_code=400, detail="Somente vozes clonadas ('clone_*') podem ser removidas.")
+    removed = delete_custom_voice(voice_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Voz clonada não encontrada.")
+    return {"success": True, "deleted_id": voice_id}
 
 
 @app.post("/api/voices/preview")
@@ -548,12 +743,75 @@ async def extract_and_cure_document(
 
 
 # ==============================================================================
-# 5. ROTAS DO DIRETOR CÊNICO
+# 5. ROTAS DO DIRETOR CÊNICO (SÍNCRONO E ASSÍNCRONO COM PROGRESSO)
 # ==============================================================================
 
+DIRECT_JOBS: Dict[str, dict] = {}
+
+
+def _execute_direction(slug: str, req: DirectChapterRequest, on_progress=None) -> Dict[str, Any]:
+    """Executa a direção cênica do capítulo e limpa artefatos renderizados antigos."""
+    director = Director(project_manager=pm)
+    script = director.direct_chapter(
+        project_slug=slug,
+        chapter_number=req.chapter_number,
+        chapter_title=req.chapter_title,
+        chapter_content=req.chapter_content,
+        force_express=req.force_express,
+        fuse_speeches=req.fuse_speeches,
+        max_chars_per_speech=req.max_chars_per_speech,
+        on_progress=on_progress,
+    )
+    # Remove áudios e artefatos renderizados antigos deste capítulo para não tocar áudio de texto anterior
+    for base_stem in (f"cap_{req.chapter_number:02d}", "demo_teste_3_falas"):
+        for ext in (".mp3", ".srt", ".vtt", ".m4b"):
+            arq_old = pm.get_project_dir(slug) / "output" / f"{base_stem}{ext}"
+            if arq_old.exists():
+                arq_old.unlink(missing_ok=True)
+
+    bible = pm.load_character_bible(slug)
+    return {
+        "success": True,
+        "script": script.model_dump(),
+        "characters": [c.model_dump() for c in bible.characters.values()],
+    }
+
+
+async def _run_direct_job(slug: str, req: DirectChapterRequest):
+    """Executa a direção cênica em thread separada atualizando progresso lote a lote."""
+    try:
+        def on_progress(idx_chunk: int, total_chunks: int, snippet: str = ""):
+            pct = max(5, int((idx_chunk / max(total_chunks, 1)) * 92))
+            if slug in DIRECT_JOBS:
+                DIRECT_JOBS[slug]["current_chunk"] = idx_chunk
+                DIRECT_JOBS[slug]["total_chunks"] = total_chunks
+                DIRECT_JOBS[slug]["percent"] = pct
+                DIRECT_JOBS[slug]["current_text"] = snippet[:60] if snippet else ""
+
+        result_payload = await asyncio.to_thread(_execute_direction, slug, req, on_progress)
+
+        if slug in DIRECT_JOBS:
+            DIRECT_JOBS[slug]["status"] = "completed"
+            DIRECT_JOBS[slug]["percent"] = 100
+            DIRECT_JOBS[slug]["result"] = result_payload
+    except Exception as e:
+        if slug in DIRECT_JOBS:
+            DIRECT_JOBS[slug]["status"] = "error"
+            DIRECT_JOBS[slug]["error"] = str(e)
+
+
+@app.get("/api/projects/{slug}/direct/status")
+def get_direct_status(slug: str):
+    """Retorna o status em tempo real da direção cênica assíncrona."""
+    job = DIRECT_JOBS.get(slug)
+    if not job:
+        return {"status": "idle"}
+    return job
+
+
 @app.post("/api/projects/{slug}/direct")
-def direct_scene(slug: str, req: DirectChapterRequest):
-    """Executa a Direção Cênica e gera o ChapterScript estruturado."""
+async def direct_scene(slug: str, req: DirectChapterRequest):
+    """Executa a Direção Cênica (síncrona ou assíncrona com progresso) e gera o ChapterScript."""
     try:
         # Garante que o projeto e sua pasta existam no workspace
         meta = pm.load_metadata(slug)
@@ -568,29 +826,30 @@ def direct_scene(slug: str, req: DirectChapterRequest):
         if not req.chapter_content.strip():
             raise HTTPException(status_code=400, detail="O texto da cena a ser dirigida não pode estar vazio.")
 
-        director = Director(project_manager=pm)
-        script = director.direct_chapter(
-            project_slug=slug,
-            chapter_number=req.chapter_number,
-            chapter_title=req.chapter_title,
-            chapter_content=req.chapter_content,
-            force_express=req.force_express,
-            fuse_speeches=req.fuse_speeches,
-            max_chars_per_speech=req.max_chars_per_speech,
-        )
-        # Remove áudios e artefatos renderizados antigos deste capítulo para não tocar áudio de texto anterior
-        for base_stem in (f"cap_{req.chapter_number:02d}", "demo_teste_3_falas"):
-            for ext in (".mp3", ".srt", ".vtt", ".m4b"):
-                arq_old = pm.get_project_dir(slug) / "output" / f"{base_stem}{ext}"
-                if arq_old.exists():
-                    arq_old.unlink(missing_ok=True)
+        if req.async_mode:
+            from src.extractor import chunk_chapter
+            total_lotes = max(1, len(chunk_chapter(req.chapter_content)))
+            job_id = f"dir_{slug}_{int(time.time())}"
+            DIRECT_JOBS[slug] = {
+                "job_id": job_id,
+                "slug": slug,
+                "status": "running",
+                "current_chunk": 0,
+                "total_chunks": total_lotes,
+                "percent": 5,
+                "current_text": "Preparando roteiro...",
+                "error": None,
+                "result": None,
+            }
+            asyncio.create_task(_run_direct_job(slug, req))
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": "running",
+                "total_chunks": total_lotes,
+            }
 
-        bible = pm.load_character_bible(slug)
-        return {
-            "success": True,
-            "script": script.model_dump(),
-            "characters": [c.model_dump() for c in bible.characters.values()],
-        }
+        return await asyncio.to_thread(_execute_direction, slug, req, None)
     except HTTPException:
         raise
     except Exception as e:
@@ -843,6 +1102,22 @@ async def render_audio(slug: str, req: RenderChapterRequest):
 # ==============================================================================
 # 7. ROTAS DE STREAMING DE ÁUDIO
 # ==============================================================================
+
+@app.get("/api/audio/projects/{slug}/block/{chapter_number}/{block_index}")
+def stream_single_block_audio(slug: str, chapter_number: int, block_index: int):
+    """Transmite o áudio individual recém-sintetizado de uma fala."""
+    temp_cap_dir = pm.get_project_dir(slug) / "temp" / f"cap_{chapter_number:02d}"
+    norm_single = temp_cap_dir / f"norm_single_{block_index:04d}.mp3"
+    if norm_single.exists():
+        return FileResponse(path=str(norm_single), media_type="audio/mpeg", filename=norm_single.name)
+
+    if temp_cap_dir.exists():
+        matches = sorted(temp_cap_dir.glob(f"block_{block_index:04d}_*.mp3"))
+        if matches:
+            return FileResponse(path=str(matches[0]), media_type="audio/mpeg", filename=matches[0].name)
+
+    raise HTTPException(status_code=404, detail="Áudio individual do bloco não encontrado.")
+
 
 @app.get("/api/audio/projects/{slug}/{filename}")
 def stream_project_audio(slug: str, filename: str):

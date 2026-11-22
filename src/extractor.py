@@ -8,6 +8,7 @@ Suporta arquivos .txt, .md, .pdf e .epub com:
 5. Chunker semântico em lotes de 5 a 8 parágrafos.
 """
 
+from collections import Counter
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,24 +19,94 @@ from typing import Any, Dict, List, Optional, Tuple
 # ==============================================================================
 
 
+def _normalize_header_candidate(line: str) -> str:
+    """Normaliza linha candidata a cabeçalho/rodapé removendo dígitos isolados e espaços extras."""
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "", line)).strip().lower()
+
+
+def _strip_repeating_headers_footers(pages_text: List[str]) -> List[str]:
+    """
+    Detecta e remove cabeçalhos e rodapés institucionais recorrentes em PDFs multi-página
+    (inspecionando as 2 primeiras e 2 últimas linhas não-vazias de páginas com >= 5 linhas).
+    """
+    if len(pages_text) < 2:
+        return pages_text
+
+    threshold = max(2, int(len(pages_text) * 0.6))
+    candidate_page_counts: Counter = Counter()
+
+    per_page_lines: List[List[str]] = []
+    for p_txt in pages_text:
+        linhas = p_txt.splitlines()
+        per_page_lines.append(linhas)
+        nao_vazias = [l.strip() for l in linhas if l.strip()]
+        if len(nao_vazias) < 5:
+            continue
+        margens = nao_vazias[:2] + nao_vazias[-2:]
+        norm_na_pagina = set()
+        for l in margens:
+            norm = _normalize_header_candidate(l)
+            if 8 <= len(norm) <= 95:
+                norm_na_pagina.add(norm)
+        for norm in norm_na_pagina:
+            candidate_page_counts[norm] += 1
+
+    repetidas = {norm for norm, cnt in candidate_page_counts.items() if cnt >= threshold}
+    if not repetidas:
+        return pages_text
+
+    cleaned_pages: List[str] = []
+    for linhas in per_page_lines:
+        nv_indices = [idx for idx, l in enumerate(linhas) if l.strip()]
+        if len(nv_indices) < 5:
+            cleaned_pages.append("\n".join(linhas))
+            continue
+        margin_indices = set(nv_indices[:2] + nv_indices[-2:])
+        filtradas = [
+            l for idx, l in enumerate(linhas)
+            if idx not in margin_indices or _normalize_header_candidate(l) not in repetidas
+        ]
+        cleaned_pages.append("\n".join(filtradas))
+    return cleaned_pages
+
+
 def cure_text(raw_text: str) -> str:
     """
     Higieniza o texto bruto de PDFs/EPUBs:
+    - Remove bytes nulos (\u0000), caracteres de controle e avisos automáticos de sumário.
     - Desfaz hifenizações no final de linhas.
-    - Remove números de página e rodapés soltos.
+    - Remove números de página, rodapés e cabeçalhos institucionais repetidos.
     - Une linhas quebradas que pertencem ao mesmo parágrafo.
     - Preserva marcações de diálogo e pontuação final.
     """
     if not raw_text:
         return ""
 
+    # 0. Remove caracteres de controle/bytes nulos (\u0000, \ufffd) e avisos automáticos de sumário
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]", " ", raw_text)
+    text = re.sub(
+        r"Nota sobre o Sum[áa]rio:\s*O campo acima ser[áa] preenchido e formatado automaticamente[^.\n]*\.?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     # 1. Normaliza quebras de linha Windows/Mac para Unix
-    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     # 2. Desfaz hifenização de fim de linha (ex: 'desenvol-\\nver' -> 'desenvolver')
     text = re.sub(r"(\w+)-\n\s*(\w+)", r"\1\2", text)
 
     linhas = text.split("\n")
+
+    # Identifica cabeçalhos institucionais repetidos (>= 3 vezes em CAIXA ALTA ou com pipe '|')
+    contagem_inst = Counter()
+    for l in linhas:
+        ls = l.strip()
+        if len(ls) >= 8 and ("|" in ls or ls.isupper()):
+            contagem_inst[ls] += 1
+    linhas_inst_repetidas = {ls for ls, c in contagem_inst.items() if c >= 3}
+
     linhas_curadas: List[str] = []
 
     # Regex para identificar números de página soltos ou cabeçalhos recorrentes
@@ -47,11 +118,13 @@ def cure_text(raw_text: str) -> str:
     for linha in linhas:
         l_strip = linha.strip()
 
-        # Descarta linhas vazias ou números de página isolados
+        # Descarta linhas vazias, números de página isolados ou cabeçalhos repetidos
         if not l_strip:
             linhas_curadas.append("")
             continue
         if padrao_pagina.match(l_strip):
+            continue
+        if l_strip in linhas_inst_repetidas:
             continue
 
         linhas_curadas.append(l_strip)
@@ -308,7 +381,8 @@ def extract_from_pdf(
             paginas.append(txt)
     doc.close()
 
-    texto_unificado = "\n\n".join(paginas).strip()
+    paginas = _strip_repeating_headers_footers(paginas)
+    texto_unificado = "\n\n".join(p.strip() for p in paginas if p.strip()).strip()
     if not texto_unificado:
         raise ValueError(
             "Nenhum texto legível foi encontrado nas páginas selecionadas. "

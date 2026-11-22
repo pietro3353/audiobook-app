@@ -223,11 +223,12 @@ class Synthesizer:
         self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
         self._kokoro_instance = None
         self._kokoro_attempted = False
+        self.active_onnx_provider: str = "CPUExecutionProvider"
         # Se a cota diária do Gemini estourar, os blocos seguintes pulam direto para o fallback
         self._gemini_quota_exhausted = False
 
     def _get_kokoro_model(self):
-        """Tenta instanciar o modelo Kokoro local se os pesos existirem."""
+        """Tenta instanciar o modelo Kokoro local com sessão ONNX otimizada (GPU DirectML/ROCm/CUDA ou CPU)."""
         if self._kokoro_attempted:
             return self._kokoro_instance
 
@@ -246,13 +247,41 @@ class Synthesizer:
         if onnx_path and voices_path:
             try:
                 import kokoro_onnx
+                import onnxruntime as ort
 
-                self._kokoro_instance = kokoro_onnx.Kokoro(
-                    str(onnx_path), str(voices_path)
-                )
+                sess_opts = ort.SessionOptions()
+                sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                sess_opts.intra_op_num_threads = max(4, os.cpu_count() or 8)
+
+                disponiveis = ort.get_available_providers()
+                prioridade = ["DmlExecutionProvider", "ROCMExecutionProvider", "CUDAExecutionProvider"]
+                preferred_providers = [p for p in prioridade if p in disponiveis]
+                if "CPUExecutionProvider" not in preferred_providers:
+                    preferred_providers.append("CPUExecutionProvider")
+
+                try:
+                    sess = ort.InferenceSession(
+                        str(onnx_path),
+                        sess_options=sess_opts,
+                        providers=preferred_providers,
+                    )
+                    sess_providers = sess.get_providers()
+                    self.active_onnx_provider = sess_providers[0] if sess_providers else "CPUExecutionProvider"
+                except Exception as e_acc:
+                    print(f"[Synthesizer] Aviso: Provedor acelerado ONNX falhou ({e_acc}). Recriando em CPU...")
+                    sess = ort.InferenceSession(
+                        str(onnx_path),
+                        sess_options=sess_opts,
+                        providers=["CPUExecutionProvider"],
+                    )
+                    self.active_onnx_provider = "CPUExecutionProvider"
+
+                self._kokoro_instance = kokoro_onnx.Kokoro.from_session(sess, str(voices_path))
+                print(f"[Synthesizer] Kokoro ONNX ativo via provedor: {self.active_onnx_provider}")
             except Exception as e:
                 print(f"[Synthesizer] Aviso: Falha ao carregar modelo Kokoro: {e}")
                 self._kokoro_instance = None
+                self.active_onnx_provider = "CPUExecutionProvider"
         else:
             print("[Synthesizer] Aviso: Pesos do Kokoro não encontrados em data/models/")
 
